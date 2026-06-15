@@ -4,13 +4,16 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>NPPS · WCR Review</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Serif+Display:ital@0;1&display=swap" rel="stylesheet"/>
 <link rel="stylesheet" href="style.css"/>
 </head>
 <body>
 
 <!-- ══════════ TOP BAR ══════════ -->
 <header id="topbar" class="topbar hidden">
-  <div class="brand"><span class="brand-mark">NPPS</span><span class="brand-sub">WCR Review</span></div>
+  <div class="brand"><span class="brand-mark">N</span><span class="brand-sub">WCR Review</span></div>
   <div class="topbar-right">
     <span id="demo-badge" class="demo-badge hidden">DEMO MODE</span>
     <span id="who" class="who"></span>
@@ -21,17 +24,19 @@
 <!-- ══════════ AUTH SCREEN ══════════ -->
 <section id="screen-auth" class="screen auth-screen">
   <div class="auth-card">
-    <div class="brand big"><span class="brand-mark">NPPS</span><span class="brand-sub">WCR Review</span></div>
+    <div class="brand big"><span class="brand-mark">N</span><span class="brand-sub">WCR Review</span></div>
     <p class="auth-tag">Review a finished Work Completion Report against its DWRs, fix the language, export a clean copy.</p>
     <label class="fld">
       <span>Name</span>
-      <input id="auth-name" type="text" placeholder="e.g. Radheya" autocomplete="off"/>
+      <select id="auth-name-select" onchange="Auth.onName()">
+        <option value="">— Select your name —</option>
+      </select>
     </label>
     <label class="fld">
       <span>Employee ID</span>
-      <input id="auth-emp" type="text" placeholder="e.g. 666" autocomplete="off"/>
+      <input id="auth-emp" type="text" placeholder="Enter your employee number" autocomplete="off" oninput="Auth.onEmp()"/>
     </label>
-    <button class="primary-btn full" onclick="Auth.login()">Continue</button>
+    <button id="auth-continue" class="primary-btn full" onclick="Auth.login()" disabled>Continue</button>
     <p id="auth-err" class="err-line"></p>
   </div>
 </section>
