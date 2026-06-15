@@ -144,22 +144,27 @@ const History = {
    In DEMO_MODE these are bypassed in favour of a built-in sample. */
 const GoogleAPI = {
   token: null,
+  _pending: null,   // shared in-flight token request (prevents double popups)
   SCOPES: 'https://www.googleapis.com/auth/documents.readonly https://www.googleapis.com/auth/drive.readonly',
   ensureToken() {
-    return new Promise((resolve, reject) => {
-      if (CFG.DEMO_MODE) return reject(new Error('demo'));
-      if (GoogleAPI.token) return resolve(GoogleAPI.token);
-      if (!window.google || !google.accounts) return reject(new Error('Google library not loaded'));
+    if (CFG.DEMO_MODE) return Promise.reject(new Error('demo'));
+    if (GoogleAPI.token) return Promise.resolve(GoogleAPI.token);
+    // If a request is already in flight, reuse it — do NOT open a second popup.
+    if (GoogleAPI._pending) return GoogleAPI._pending;
+    GoogleAPI._pending = new Promise((resolve, reject) => {
+      if (!window.google || !google.accounts) { reject(new Error('Google library not loaded')); return; }
       const client = google.accounts.oauth2.initTokenClient({
         client_id: CFG.GOOGLE_CLIENT_ID,
         scope: GoogleAPI.SCOPES,
         callback: (resp) => {
           if (resp && resp.access_token) { GoogleAPI.token = resp.access_token; resolve(resp.access_token); }
-          else reject(new Error('Authorization failed'));
-        }
+          else reject(new Error('Authorization failed or was cancelled.'));
+        },
+        error_callback: (err) => reject(new Error('Google sign-in was blocked or closed (' + (err && err.type || 'popup') + ').'))
       });
       client.requestAccessToken();
-    });
+    }).finally(() => { GoogleAPI._pending = null; });
+    return GoogleAPI._pending;
   },
   async readDoc(docId) {
     const token = await GoogleAPI.ensureToken();
@@ -274,6 +279,8 @@ const Preview = {
       } else {
         const docId = Preview.extractDocId(link);
         if (!docId) throw new Error('That doesn’t look like a Google Doc link.');
+        // One popup, tied to the click, before any data fetch.
+        await Promise.race([GoogleAPI.ensureToken(), timeout]);
         const [doc, blob] = await Promise.race([
           Promise.all([GoogleAPI.readDoc(docId), GoogleAPI.exportDocx(docId)]),
           timeout
