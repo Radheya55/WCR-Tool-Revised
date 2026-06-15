@@ -44,10 +44,17 @@ const Auth = {
   employees: [],
 
   async loadEmployees() {
+    const err = document.getElementById('auth-err');
     try {
       const r = await fetch(CFG.EMPLOYEES_URL + '?t=' + Date.now());
+      if (!r.ok) throw new Error('HTTP ' + r.status);
       Auth.employees = await r.json();
-    } catch (e) { Auth.employees = []; }
+      if (!Array.isArray(Auth.employees) || !Auth.employees.length) throw new Error('empty list');
+      if (err) err.textContent = '';
+    } catch (e) {
+      Auth.employees = [];
+      if (err) err.textContent = 'Could not load the employee list (' + e.message + '). Check that employees.json is in the repo.';
+    }
     Auth.populate();
   },
   populate() {
