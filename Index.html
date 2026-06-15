@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>NPPS · WCR Review</title>
+<link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+
+<!-- ══════════ TOP BAR ══════════ -->
+<header id="topbar" class="topbar hidden">
+  <div class="brand"><span class="brand-mark">NPPS</span><span class="brand-sub">WCR Review</span></div>
+  <div class="topbar-right">
+    <span id="demo-badge" class="demo-badge hidden">DEMO MODE</span>
+    <span id="who" class="who"></span>
+    <button id="logout-btn" class="ghost-btn" onclick="Auth.logout()">Sign out</button>
+  </div>
+</header>
+
+<!-- ══════════ AUTH SCREEN ══════════ -->
+<section id="screen-auth" class="screen auth-screen">
+  <div class="auth-card">
+    <div class="brand big"><span class="brand-mark">NPPS</span><span class="brand-sub">WCR Review</span></div>
+    <p class="auth-tag">Review a finished Work Completion Report against its DWRs, fix the language, export a clean copy.</p>
+    <label class="fld">
+      <span>Name</span>
+      <input id="auth-name" type="text" placeholder="e.g. Radheya" autocomplete="off"/>
+    </label>
+    <label class="fld">
+      <span>Employee ID</span>
+      <input id="auth-emp" type="text" placeholder="e.g. 666" autocomplete="off"/>
+    </label>
+    <button class="primary-btn full" onclick="Auth.login()">Continue</button>
+    <p id="auth-err" class="err-line"></p>
+  </div>
+</section>
+
+<!-- ══════════ HOME SCREEN ══════════ -->
+<section id="screen-home" class="screen home-screen hidden">
+  <div class="home-wrap">
+    <div class="home-head">
+      <h1>Reviews</h1>
+      <button class="primary-btn" onclick="Review.startNew()">+ Create WCR Review</button>
+    </div>
+    <div id="history-list" class="history-list"></div>
+  </div>
+</section>
+
+<!-- ══════════ REVIEW WORKSPACE ══════════ -->
+<section id="screen-review" class="screen review-screen hidden">
+
+  <!-- LEFT: document preview -->
+  <div class="preview-pane">
+    <div class="preview-toolbar">
+      <button class="ghost-btn" onclick="Review.backHome()">← Reviews</button>
+      <span id="doc-title" class="doc-title">No document loaded</span>
+      <span id="grammar-count" class="chip hidden"></span>
+    </div>
+    <div id="link-bar" class="link-bar">
+      <input id="doc-link" type="text" placeholder="Paste the Google Doc link of the prepared WCR…"/>
+      <button id="load-doc-btn" class="primary-btn" onclick="Preview.loadFromLink()">Load document</button>
+    </div>
+    <div id="preview-scroll" class="preview-scroll">
+      <div id="preview-empty" class="preview-empty">
+        <div class="empty-ico">📄</div>
+        <p>Paste a Google Doc link above and press <strong>Load document</strong>.</p>
+        <p class="muted">The report appears here in a clean, scrollable view. Your original file is never changed.</p>
+      </div>
+      <article id="doc-body" class="doc-body hidden"></article>
+    </div>
+  </div>
+
+  <!-- RIGHT: action rail -->
+  <aside class="rail">
+
+    <!-- Step 1: DWR coverage -->
+    <div class="rail-card" id="card-dwr">
+      <div class="rail-card-head">
+        <span class="step-no">1</span>
+        <h3>DWR Uploads</h3>
+      </div>
+      <p class="rail-hint">Check that every point from the DWRs is covered in the report.</p>
+      <div id="dwr-list" class="dwr-list"></div>
+      <div class="rail-actions">
+        <button class="ghost-btn" id="dwr-upload-btn" onclick="DWR.pick()">＋ Upload DWR (PDF)</button>
+        <button class="primary-btn" id="dwr-parse-btn" onclick="DWR.parse()" disabled>Parse</button>
+      </div>
+      <div id="coverage-out" class="coverage-out hidden">
+        <div class="coverage-head">Points that don't appear covered</div>
+        <div id="coverage-items"></div>
+        <button class="primary-btn full" onclick="DWR.acceptCoverage()">OK — I've added these</button>
+      </div>
+    </div>
+
+    <!-- Step 2: Grammar -->
+    <div class="rail-card disabled" id="card-grammar">
+      <div class="rail-card-head">
+        <span class="step-no">2</span>
+        <h3>Grammar Check</h3>
+      </div>
+      <p class="rail-hint">Flags whole sentences that read wrong — not comma nitpicks. Click a flag to jump to it in the preview.</p>
+      <button class="primary-btn full" id="grammar-btn" onclick="Grammar.run()" disabled>Run grammar check</button>
+      <div id="grammar-list" class="grammar-list"></div>
+    </div>
+
+    <!-- Step 3: Export -->
+    <div class="rail-card disabled" id="card-export">
+      <div class="rail-card-head">
+        <span class="step-no">3</span>
+        <h3>Download</h3>
+      </div>
+      <p class="rail-hint">Exports a revised .docx with your accepted changes. The original Google Doc is untouched.</p>
+      <button class="primary-btn full" id="export-btn" onclick="Export.run()" disabled>Download revised .docx</button>
+    </div>
+
+  </aside>
+</section>
+
+<!-- toast -->
+<div id="toast" class="toast hidden"></div>
+
+<!-- libs: JSZip for layout-preserving .docx editing (loaded lazily by Export) -->
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
