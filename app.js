@@ -11,7 +11,8 @@ const State = {
   user: null,
   docId: null, docTitle: '', origDocxBlob: null,
   dwrs: [],            // {name, b64}
-  coverage: [],        // {section, point}
+  coverage: [],        // {section, point}  (uncovered only)
+  coveragePoints: [],  // {point, covered, section}  (full list)
   grammar: [],         // {id, original, suggestion, status:'open'|'accepted'|'rejected'}
   coverageDone: false,
   docLoaded: false,    // true ONLY after a document actually renders
@@ -298,6 +299,7 @@ const Preview = {
       }
       // success — NOW the document is genuinely loaded
       State.docLoaded = true;
+      Review._lock('card-grammar', false); // grammar available as soon as a doc is loaded
       document.getElementById('doc-title').textContent = State.docTitle;
       empty.classList.add('hidden');
       document.getElementById('doc-body').classList.remove('hidden');
@@ -317,10 +319,26 @@ const Preview = {
   docToModel(doc) {
     const blocks = [];
     const c = (doc.body && doc.body.content) || [];
+    const inlineObjs = doc.inlineObjects || {};
+    // resolve an inline image element to its image URL
+    const imgUrl = (objId) => {
+      try {
+        const eo = inlineObjs[objId].inlineObjectProperties.embeddedObject;
+        return eo.imageProperties?.contentUri || (eo.embeddedDrawingProperties ? null : null);
+      } catch (e) { return null; }
+    };
     const runText = (el) => (el.paragraph?.elements || [])
       .map(e => e.textRun ? e.textRun.content : '').join('').replace(/\n$/, '');
+    // collect any inline images inside a paragraph's elements
+    const paraImages = (el) => (el.paragraph?.elements || [])
+      .filter(e => e.inlineObjectElement)
+      .map(e => imgUrl(e.inlineObjectElement.inlineObjectId))
+      .filter(Boolean);
+
     c.forEach(el => {
       if (el.paragraph) {
+        const imgs = paraImages(el);
+        imgs.forEach(src => blocks.push({ t: 'img', src }));
         const style = el.paragraph.paragraphStyle?.namedStyleType || 'NORMAL_TEXT';
         const text = runText(el);
         if (!text.trim()) return;
@@ -331,10 +349,23 @@ const Preview = {
         else blocks.push({ t: 'p', text });
       } else if (el.table) {
         const rows = (el.table.tableRows || []).map(r =>
-          (r.tableCells || []).map(cell =>
-            (cell.content || []).map(cc => cc.paragraph
-              ? (cc.paragraph.elements || []).map(e => e.textRun ? e.textRun.content : '').join('') : '')
-              .join('').trim()));
+          (r.tableCells || []).map(cell => {
+            // pull text AND any images from the cell
+            let cellText = '';
+            const cellImgs = [];
+            (cell.content || []).forEach(cc => {
+              if (cc.paragraph) {
+                cellText += (cc.paragraph.elements || []).map(e => e.textRun ? e.textRun.content : '').join('');
+                (cc.paragraph.elements || []).forEach(e => {
+                  if (e.inlineObjectElement) {
+                    const u = imgUrl(e.inlineObjectElement.inlineObjectId);
+                    if (u) cellImgs.push(u);
+                  }
+                });
+              }
+            });
+            return { text: cellText.trim(), imgs: cellImgs };
+          }));
         blocks.push({ t: 'table', rows });
       }
     });
@@ -351,9 +382,16 @@ const Preview = {
       else if (b.t === 'h2') html += `<h2>${esc(b.text)}</h2>`;
       else if (b.t === 'h3') html += `<h3>${esc(b.text)}</h3>`;
       else if (b.t === 'p') html += `<p>${esc(b.text)}</p>`;
+      else if (b.t === 'img') html += `<img class="doc-img" src="${b.src}" loading="lazy" alt="figure"/>`;
       else if (b.t === 'table') {
+        const multiCol = b.rows.length > 1 && (b.rows[0] || []).length > 1;
         html += '<table>' + b.rows.map((r, ri) =>
-          '<tr>' + r.map(cell => ri === 0 ? `<th>${esc(cell)}</th>` : `<td>${esc(cell)}</td>`).join('') + '</tr>'
+          '<tr>' + r.map(cell => {
+            const txt = (cell && cell.text) || '';
+            const imgs = (cell && cell.imgs) || [];
+            const inner = esc(txt) + imgs.map(s => `<img class="doc-img" src="${s}" loading="lazy" alt="figure"/>`).join('');
+            return (multiCol && ri === 0) ? `<th>${inner}</th>` : `<td>${inner}</td>`;
+          }).join('') + '</tr>'
         ).join('') + '</table>';
       }
     });
@@ -403,9 +441,13 @@ const DWR = {
         report: reportText,
         dwrs: State.dwrs.map(d => ({ name: d.name, b64: d.b64 }))
       });
+      State.coveragePoints = (res && res.points) || [];
       State.coverage = (res && res.uncovered) || [];
       DWR.renderCoverage();
-      if (!State.coverage.length) Toast.show('Looks fully covered — no missing DWR points found.', 'ok');
+      const missing = State.coverage.length;
+      if (!State.coveragePoints.length) Toast.show('Couldn’t extract points from those DWRs — check they’re the right PDFs.', 'err');
+      else if (!missing) Toast.show('All ' + State.coveragePoints.length + ' DWR points appear covered.', 'ok');
+      else Toast.show(missing + ' of ' + State.coveragePoints.length + ' DWR points are NOT covered — see the list.', 'err');
     } catch (e) {
       Toast.show(e.message || 'Parse failed.', 'err');
     } finally {
@@ -418,13 +460,28 @@ const DWR = {
   renderCoverage() {
     const out = document.getElementById('coverage-out');
     const items = document.getElementById('coverage-items');
-    if (!State.coverage.length) { out.classList.add('hidden'); return; }
+    const pts = State.coveragePoints;
+    if (!pts.length) { out.classList.add('hidden'); return; }
     out.classList.remove('hidden');
-    items.innerHTML = State.coverage.map((c, i) => `
-      <div class="cov-item">
-        <button class="copy" onclick="DWR.copyPoint(${i})">copy</button>
-        <span class="cov-sec">${esc(c.section || 'General')}</span>${esc(c.point)}
-      </div>`).join('');
+    const covered = pts.filter(p => p.covered).length;
+    const missing = pts.length - covered;
+    let html = `<div class="cov-summary"><strong>${covered}</strong> covered · <strong>${missing}</strong> not covered · ${pts.length} total</div>`;
+    // show NOT covered first (actionable), each with copy + the section to paste into
+    pts.filter(p => !p.covered).forEach((p) => {
+      const idx = State.coverage.findIndex(c => c.point === p.point);
+      html += `<div class="cov-item">
+        ${idx >= 0 ? `<button class="copy" onclick="DWR.copyPoint(${idx})">copy</button>` : ''}
+        <span class="cov-flag miss">NOT COVERED</span>
+        <span class="cov-sec">${esc(p.section || 'General')}</span>${esc(p.point)}
+      </div>`;
+    });
+    // then covered (collapsed-feel, muted)
+    pts.filter(p => p.covered).forEach((p) => {
+      html += `<div class="cov-item ok">
+        <span class="cov-flag good">COVERED</span>${esc(p.point)}
+      </div>`;
+    });
+    items.innerHTML = html;
   },
   copyPoint(i) {
     const c = State.coverage[i];
@@ -442,6 +499,7 @@ const DWR = {
   },
   clearCoverage() {
     State.coverage = [];
+    State.coveragePoints = [];
     document.getElementById('coverage-out').classList.add('hidden');
     document.getElementById('coverage-items').innerHTML = '';
   }
