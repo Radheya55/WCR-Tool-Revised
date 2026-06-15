@@ -195,3 +195,18 @@ html, body { height:100%; background:var(--navy); color:var(--white);
   .review-screen { grid-template-columns:1fr; height:auto; }
   .rail { order:-1; }
 }
+
+/* ── coverage summary (covered / not covered) ── */
+.cov-summary { font-size:12.5px; color:var(--white); background:var(--input-bg);
+  border:1px solid var(--navy-border); border-radius:7px; padding:8px 11px; margin-bottom:10px; }
+.cov-summary strong { color:var(--amber); }
+.cov-flag { display:inline-block; font-size:9.5px; font-weight:800; letter-spacing:.4px;
+  padding:2px 7px; border-radius:10px; margin-right:7px; vertical-align:middle; }
+.cov-flag.miss { background:rgba(192,57,43,0.18); color:#f08070; border:1px solid var(--red); }
+.cov-flag.good { background:rgba(39,174,96,0.15); color:#7ef59a; border:1px solid var(--green); }
+.cov-item.ok { background:var(--input-bg); border-color:var(--navy-border); color:var(--white-dim); }
+
+/* ── images inside the rendered document ── */
+.doc-img { max-width:100%; max-height:320px; object-fit:contain; display:block;
+  margin:8px auto; border:1px solid #d8dde6; border-radius:4px; background:#fff; }
+.doc-body td .doc-img, .doc-body th .doc-img { max-height:160px; margin:4px auto; }
