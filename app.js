@@ -14,6 +14,7 @@ const State = {
   coverage: [],        // {section, point}
   grammar: [],         // {id, original, suggestion, status:'open'|'accepted'|'rejected'}
   coverageDone: false,
+  docLoaded: false,    // true ONLY after a document actually renders
 };
 
 /* ───────────── Toast ───────────── */
@@ -200,6 +201,7 @@ const Review = {
   startNew() {
     State.docId = null; State.docTitle = ''; State.origDocxBlob = null;
     State.dwrs = []; State.coverage = []; State.grammar = []; State.coverageDone = false;
+    State.docLoaded = false;
     document.getElementById('doc-link').value = '';
     document.getElementById('doc-body').classList.add('hidden');
     document.getElementById('doc-body').innerHTML = '';
@@ -233,29 +235,69 @@ const Preview = {
   async loadFromLink() {
     const link = document.getElementById('doc-link').value.trim();
     const btn = document.getElementById('load-doc-btn');
-    btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Loading…';
+    const empty = document.getElementById('preview-empty');
+
+    // reset load state — a previous hung attempt must not count as loaded
+    State.docLoaded = false;
+    State.docId = null;
+    Review._lock('card-grammar', true);
+    Review._lock('card-export', true);
+    DWR.refresh();
+
+    const LIMIT = 60; // seconds before we give up
+    let remaining = LIMIT;
+    const setLabel = () => { btn.innerHTML = '<span class="spin"></span>Loading… ' + remaining + 's'; };
+    setLabel();
+    btn.disabled = true;
+    // live countdown in the empty-state area so the wait is visible
+    empty.classList.remove('hidden');
+    const empMsg = empty.querySelector('p');
+    const empOrig = empMsg ? empMsg.innerHTML : '';
+    if (empMsg) empMsg.innerHTML = 'Fetching the document from Google… <strong>' + remaining + 's</strong>';
+    const ticker = setInterval(() => {
+      remaining--;
+      if (remaining < 0) return;
+      setLabel();
+      if (empMsg) empMsg.innerHTML = 'Fetching the document from Google… <strong>' + remaining + 's</strong>'
+        + (remaining < 40 ? '<br><span class="muted" style="font-size:12px">Taking a while — if this is the first load, Google may be asking you to grant access in a popup.</span>' : '');
+    }, 1000);
+
+    // hard timeout so it can never spin forever
+    const timeout = new Promise((_, rej) =>
+      setTimeout(() => rej(new Error('Timed out after ' + LIMIT + 's. The document may be very large, not shared with your account, or Google access wasn’t granted.')), LIMIT * 1000));
+
     try {
       if (CFG.DEMO_MODE) {
-        await Demo.delay(500);
+        await Promise.race([Demo.delay(500), timeout]);
         State.docId = 'demo'; State.docTitle = 'WCR — MV Reliance Star (Demo)';
         Preview.renderModel(Demo.sampleModel());
       } else {
         const docId = Preview.extractDocId(link);
         if (!docId) throw new Error('That doesn’t look like a Google Doc link.');
+        const [doc, blob] = await Promise.race([
+          Promise.all([GoogleAPI.readDoc(docId), GoogleAPI.exportDocx(docId)]),
+          timeout
+        ]);
         State.docId = docId;
-        const [doc, blob] = await Promise.all([GoogleAPI.readDoc(docId), GoogleAPI.exportDocx(docId)]);
         State.origDocxBlob = blob;
         State.docTitle = doc.title || 'WCR';
         Preview.renderModel(Preview.docToModel(doc));
       }
+      // success — NOW the document is genuinely loaded
+      State.docLoaded = true;
       document.getElementById('doc-title').textContent = State.docTitle;
-      document.getElementById('preview-empty').classList.add('hidden');
+      empty.classList.add('hidden');
       document.getElementById('doc-body').classList.remove('hidden');
       Toast.show('Document loaded. Upload DWRs to check coverage.', 'ok');
     } catch (e) {
+      State.docLoaded = false;
+      State.docId = null;
+      if (empMsg) empMsg.innerHTML = empOrig;
       Toast.show(e.message || 'Could not load the document.', 'err');
     } finally {
+      clearInterval(ticker);
       btn.disabled = false; btn.textContent = 'Load document';
+      DWR.refresh(); // re-evaluate Parse gating against the real load state
     }
   },
   // Google Docs API JSON → our simple block model
@@ -332,14 +374,18 @@ const DWR = {
     list.innerHTML = State.dwrs.map((d, i) =>
       `<div class="dwr-item"><span class="doc-ico">📕</span><span class="nm">${esc(d.name)}</span>
         <button class="rm" onclick="DWR.remove(${i})" title="Remove">×</button></div>`).join('');
-    document.getElementById('dwr-parse-btn').disabled = State.dwrs.length === 0 || !State.docId;
+    document.getElementById('dwr-parse-btn').disabled = State.dwrs.length === 0 || !State.docLoaded;
   },
   async parse() {
-    if (!State.docId) { Toast.show('Load the document first.', 'err'); return; }
+    if (!State.docLoaded) { Toast.show('Load the document first — coverage needs the report text to compare against.', 'err'); return; }
+    const reportText = DWR._currentReportText().trim();
+    if (reportText.length < 50) {
+      Toast.show('The loaded report looks empty, so coverage can’t be checked. Re-load the document.', 'err');
+      return;
+    }
     const btn = document.getElementById('dwr-parse-btn');
     btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Parsing…';
     try {
-      const reportText = DWR._currentReportText();
       const res = await Worker.call('dwr-coverage', {
         report: reportText,
         dwrs: State.dwrs.map(d => ({ name: d.name, b64: d.b64 }))
