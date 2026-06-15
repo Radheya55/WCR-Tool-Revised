@@ -41,6 +41,34 @@ const Screen = {
 /* ───────────── Auth (name + Employee ID) ───────────── */
 const Auth = {
   KEY: 'wcrr_user',
+  employees: [],
+
+  async loadEmployees() {
+    try {
+      const r = await fetch(CFG.EMPLOYEES_URL + '?t=' + Date.now());
+      Auth.employees = await r.json();
+    } catch (e) { Auth.employees = []; }
+    Auth.populate();
+  },
+  populate() {
+    const sel = document.getElementById('auth-name-select');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— Select your name —</option>';
+    [...Auth.employees].sort((a,b) => a.name.localeCompare(b.name)).forEach(emp => {
+      const o = document.createElement('option');
+      o.value = emp.empNo; o.textContent = emp.name;
+      sel.appendChild(o);
+    });
+  },
+  onName() { document.getElementById('auth-emp').value = ''; document.getElementById('auth-err').textContent = ''; Auth._refreshBtn(); },
+  onEmp() { document.getElementById('auth-err').textContent = ''; Auth._refreshBtn(); },
+  _refreshBtn() {
+    const sel = document.getElementById('auth-name-select').value;
+    const typed = document.getElementById('auth-emp').value.trim();
+    const match = sel && typed && sel.toLowerCase() === typed.toLowerCase();
+    document.getElementById('auth-continue').disabled = !match;
+  },
+
   restore() {
     try {
       const u = JSON.parse(localStorage.getItem(Auth.KEY) || 'null');
@@ -49,11 +77,15 @@ const Auth = {
     return false;
   },
   login() {
-    const name = document.getElementById('auth-name').value.trim();
-    const emp = document.getElementById('auth-emp').value.trim();
+    const sel = document.getElementById('auth-name-select');
+    const empNo = sel.value;
+    const typed = document.getElementById('auth-emp').value.trim();
     const err = document.getElementById('auth-err');
-    if (!name || !emp) { err.textContent = 'Enter both name and Employee ID.'; return; }
-    State.user = { name, emp };
+    if (!empNo || !typed) { err.textContent = 'Select your name and enter your employee number.'; return; }
+    if (empNo.toLowerCase() !== typed.toLowerCase()) { err.textContent = 'Employee number does not match the selected name.'; return; }
+    const emp = Auth.employees.find(e => e.empNo.toLowerCase() === typed.toLowerCase());
+    if (!emp) { err.textContent = 'Employee not found.'; return; }
+    State.user = { name: emp.name, emp: emp.empNo };
     localStorage.setItem(Auth.KEY, JSON.stringify(State.user));
     err.textContent = '';
     Auth._enter();
@@ -595,6 +627,7 @@ const Demo = {
 /* ───────────── boot ───────────── */
 (function init() {
   document.getElementById('demo-badge').classList.toggle('hidden', !CFG.DEMO_MODE);
+  Auth.loadEmployees();
   if (!Auth.restore()) Screen.show('auth');
   // load Google Identity Services if configured
   if (!CFG.DEMO_MODE && CFG.GOOGLE_CLIENT_ID) {
