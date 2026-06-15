@@ -171,15 +171,21 @@ const GoogleAPI = {
     const r = await fetch(`https://docs.googleapis.com/v1/documents/${docId}`, {
       headers: { Authorization: 'Bearer ' + token }
     });
-    if (!r.ok) throw new Error('Could not read the document (status ' + r.status + ')');
+    if (!r.ok) throw new Error('Read failed (' + r.status + '): ' + (await GoogleAPI._reason(r)));
     return r.json();
   },
   async exportDocx(docId) {
     const token = await GoogleAPI.ensureToken();
     const url = `https://www.googleapis.com/drive/v3/files/${docId}/export?mimeType=application/vnd.openxmlformats-officedocument.wordprocessingml.document`;
     const r = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
-    if (!r.ok) throw new Error('Could not export the original .docx');
+    if (!r.ok) throw new Error('Export failed (' + r.status + '): ' + (await GoogleAPI._reason(r)));
     return r.blob();
+  },
+  async _reason(r) {
+    try {
+      const j = await r.json();
+      return (j && j.error && j.error.message) ? j.error.message : 'unknown error';
+    } catch (e) { return 'unknown error'; }
   }
 };
 
