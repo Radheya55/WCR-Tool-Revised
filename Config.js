@@ -10,7 +10,7 @@ window.WCRR_CONFIG = {
   WORKER_URL: "https://polished-lake-4911.radheya-supnekar.workers.dev",
 
   // Reuse the SAME employee list as the current tool (one list, both tools).
-  EMPLOYEES_URL: "https://raw.githubusercontent.com/Radheya55/Npps-Niigata-WCR-Tool/main/employees.json",
+  EMPLOYEES_URL: "employees.json",
 
   // Live mode. Set to true any time to demo with the built-in sample.
   DEMO_MODE: false,
