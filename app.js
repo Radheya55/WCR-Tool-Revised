@@ -6,7 +6,7 @@
    Original Google Doc is never modified.
    ═══════════════════════════════════════════════════════════════ */
 const CFG = window.WCRR_CONFIG || { DEMO_MODE: true };
-const BUILD = 'v20';
+const BUILD = 'v21';
 
 const State = {
   user: null,
@@ -38,6 +38,18 @@ const Screen = {
     ['auth', 'home', 'drafts', 'review', 'confirm'].forEach(s =>
       document.getElementById('screen-' + s).classList.toggle('hidden', s !== name));
     document.getElementById('topbar').classList.toggle('hidden', name === 'auth');
+  }
+};
+
+/* count-up progress shown on a button + a "please wait" note while AI runs */
+const Progress = {
+  start(btn, noteEl, label, hint) {
+    let s = 0;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spin"></span>' + label + ' 0s';
+    if (noteEl) { noteEl.className = 'grammar-note'; noteEl.textContent = hint || 'Working… this can take 20–40 seconds. Please wait — don’t refresh or leave this page.'; }
+    const t = setInterval(() => { s++; btn.innerHTML = '<span class="spin"></span>' + label + ' ' + s + 's'; }, 1000);
+    return { stop(restoreText) { clearInterval(t); btn.disabled = false; btn.textContent = restoreText; } };
   }
 };
 
@@ -577,7 +589,8 @@ const DWR = {
       return;
     }
     const btn = document.getElementById('dwr-parse-btn');
-    btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Parsing…';
+    const prog = Progress.start(btn, document.getElementById('dwr-note'), 'Parsing…',
+      'Reading the DWRs and comparing against the report. This can take 20–60 seconds for several PDFs. Please wait — don’t refresh.');
     try {
       const res = await Worker.call('dwr-coverage', {
         report: reportText,
@@ -602,7 +615,8 @@ const DWR = {
     } catch (e) {
       Toast.show(e.message || 'Parse failed.', 'err');
     } finally {
-      btn.disabled = false; btn.textContent = 'Parse';
+      prog.stop('Parse');
+      const dn = document.getElementById('dwr-note'); if (dn) dn.textContent = '';
     }
   },
   _currentReportText() {
@@ -661,7 +675,8 @@ const DWR = {
 const Grammar = {
   async run() {
     const btn = document.getElementById('grammar-btn');
-    btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Checking…';
+    const prog = Progress.start(btn, document.getElementById('grammar-note'), 'Checking…',
+      'Proofreading every line of the report. This usually takes 10–30 seconds. Please wait — don’t refresh.');
     try {
       // Gather text per editable block (paragraphs AND every table cell), so
       // nothing hides inside a table. Join as discrete lines for the checker.
