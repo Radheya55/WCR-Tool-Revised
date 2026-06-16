@@ -6,7 +6,7 @@
    Original Google Doc is never modified.
    ═══════════════════════════════════════════════════════════════ */
 const CFG = window.WCRR_CONFIG || { DEMO_MODE: true };
-const BUILD = 'v21';
+const BUILD = 'v22';
 
 const State = {
   user: null,
@@ -41,14 +41,18 @@ const Screen = {
   }
 };
 
-/* count-up progress shown on a button + a "please wait" note while AI runs */
+/* reverse-countdown progress on a button + a "please wait" note while AI runs */
 const Progress = {
-  start(btn, noteEl, label, hint) {
-    let s = 0;
+  start(btn, noteEl, label, limit, hint) {
+    let left = limit;
     btn.disabled = true;
-    btn.innerHTML = '<span class="spin"></span>' + label + ' 0s';
-    if (noteEl) { noteEl.className = 'grammar-note'; noteEl.textContent = hint || 'Working… this can take 20–40 seconds. Please wait — don’t refresh or leave this page.'; }
-    const t = setInterval(() => { s++; btn.innerHTML = '<span class="spin"></span>' + label + ' ' + s + 's'; }, 1000);
+    btn.innerHTML = '<span class="spin"></span>' + label + ' ' + left + 's';
+    if (noteEl) { noteEl.className = 'grammar-note'; noteEl.textContent = hint || 'Working… please wait, don’t refresh.'; }
+    const t = setInterval(() => {
+      left--;
+      btn.innerHTML = '<span class="spin"></span>' + label + ' ' + (left > 0 ? left + 's' : 'finishing…');
+      if (left <= 0) clearInterval(t);
+    }, 1000);
     return { stop(restoreText) { clearInterval(t); btn.disabled = false; btn.textContent = restoreText; } };
   }
 };
@@ -237,17 +241,27 @@ const GoogleAPI = {
 const Worker = {
   // Maps the tool's logical modes to your worker's routes.
   ROUTES: { 'dwr-coverage': '/coverage-check', 'grammar': '/sentence-grammar' },
-  async call(mode, payload) {
+  async call(mode, payload, timeoutMs) {
     if (CFG.DEMO_MODE) return Demo.worker(mode, payload);
     const route = Worker.ROUTES[mode];
     if (!route) throw new Error('Unknown AI mode: ' + mode);
-    const r = await fetch(CFG.WORKER_URL + route, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    if (!r.ok) throw new Error('AI service error (' + r.status + ')');
-    return r.json();
+    const ctrl = new AbortController();
+    const timer = timeoutMs ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+    try {
+      const r = await fetch(CFG.WORKER_URL + route, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: ctrl.signal
+      });
+      if (!r.ok) throw new Error('AI service error (' + r.status + ')');
+      return await r.json();
+    } catch (e) {
+      if (e.name === 'AbortError') throw new Error('timed-out');
+      throw e;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 };
 
@@ -589,13 +603,14 @@ const DWR = {
       return;
     }
     const btn = document.getElementById('dwr-parse-btn');
-    const prog = Progress.start(btn, document.getElementById('dwr-note'), 'Parsing…',
-      'Reading the DWRs and comparing against the report. This can take 20–60 seconds for several PDFs. Please wait — don’t refresh.');
+    const LIMIT = 180;
+    const prog = Progress.start(btn, document.getElementById('dwr-note'), 'Parsing…', LIMIT,
+      'Reading the DWRs and comparing against the report. Please wait — don’t refresh.');
     try {
       const res = await Worker.call('dwr-coverage', {
         report: reportText,
         dwrs: State.dwrs.map(d => ({ name: d.name, b64: d.b64 }))
-      });
+      }, (LIMIT - 5) * 1000);
       State.coveragePoints = (res && res.points) || [];
       State.coverage = (res && res.uncovered) || [];
       DWR.renderCoverage();
@@ -613,7 +628,7 @@ const DWR = {
       else if (!missing) Toast.show('All ' + State.coveragePoints.length + ' DWR points appear covered.', 'ok');
       else Toast.show(missing + ' of ' + State.coveragePoints.length + ' DWR points are NOT covered — see the list.', 'err');
     } catch (e) {
-      Toast.show(e.message || 'Parse failed.', 'err');
+      Toast.show(e.message === 'timed-out' ? 'Parsing timed out — try fewer DWRs at once, or run it again.' : (e.message || 'Parse failed.'), 'err');
     } finally {
       prog.stop('Parse');
       const dn = document.getElementById('dwr-note'); if (dn) dn.textContent = '';
@@ -675,28 +690,48 @@ const DWR = {
 const Grammar = {
   async run() {
     const btn = document.getElementById('grammar-btn');
-    const prog = Progress.start(btn, document.getElementById('grammar-note'), 'Checking…',
-      'Proofreading every line of the report. This usually takes 10–30 seconds. Please wait — don’t refresh.');
+    const LIMIT = 150; // seconds — hard cap; the check completes within this
+    const prog = Progress.start(btn, document.getElementById('grammar-note'), 'Checking…', LIMIT,
+      'Proofreading every section and sentence. Please wait — don’t refresh.');
     try {
-      // Gather text per editable block (paragraphs AND every table cell), so
-      // nothing hides inside a table. Join as discrete lines for the checker.
       const body = document.getElementById('doc-body');
       const blockEls = body.querySelectorAll('[data-orig], p, li, td, th');
       const seen = new Set();
       const lines = [];
       blockEls.forEach(el => {
         const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
-        if (t && t.length >= 8 && /[A-Za-z]{3,}/.test(t) && !seen.has(t)) { seen.add(t); lines.push(t); }
+        if (t && t.length >= 6 && /[A-Za-z]{3,}/.test(t) && !seen.has(t)) { seen.add(t); lines.push(t); }
       });
-      const text = lines.join('\n');
-      const res = await Worker.call('grammar', { report: text });
-      const issues = (res && res.issues) || [];
-      const rawCount = issues.length;
-      // keep issues whose original text is present in the preview (whitespace-tolerant)
+
+      // Split into small chunks so every section is checked in fast, bounded
+      // calls (one giant call was hanging). Run chunks in parallel.
+      const CHUNK = 20;
+      const chunks = [];
+      for (let i = 0; i < lines.length; i += CHUNK) chunks.push(lines.slice(i, i + CHUNK).join('\n'));
+      if (!chunks.length) chunks.push('');
+
+      const perCallTimeout = Math.round((LIMIT * 1000) / Math.max(1, Math.ceil(chunks.length / 4)));
+      const allIssues = [];
+      let failed = 0;
+      // run in waves of 4 parallel calls
+      for (let i = 0; i < chunks.length; i += 4) {
+        const wave = chunks.slice(i, i + 4).map(c =>
+          Worker.call('grammar', { report: c }, perCallTimeout)
+            .then(r => (r && r.issues) || [])
+            .catch(() => { failed++; return []; })
+        );
+        const results = await Promise.all(wave);
+        results.forEach(arr => allIssues.push(...arr));
+      }
+
       const haystack = (body.innerText || '').replace(/\s+/g, ' ');
-      State.grammar = issues
-        .filter(it => it.original && haystack.includes(it.original.replace(/\s+/g, ' ').trim()))
-        .map((it, i) => ({ id: 'g' + i, original: it.original.replace(/\s+/g, ' ').trim(), suggestion: it.suggestion, status: 'open' }));
+      const uniq = new Set();
+      State.grammar = allIssues
+        .filter(it => it && it.original)
+        .map(it => ({ original: it.original.replace(/\s+/g, ' ').trim(), suggestion: (it.suggestion || '').trim() }))
+        .filter(it => it.original && haystack.includes(it.original) && !uniq.has(it.original) && uniq.add(it.original))
+        .map((it, i) => ({ id: 'g' + i, original: it.original, suggestion: it.suggestion, status: 'open' }));
+
       Grammar.wrapAll();
       Grammar.render();
       const n = State.grammar.length;
@@ -705,25 +740,27 @@ const Grammar = {
       chip.classList.toggle('hidden', n === 0);
       Review._lock('card-export', false);
 
-      // Honesty guard: differentiate "clean" from "the check didn't land".
       const note = document.getElementById('grammar-note');
       if (note) {
-        if (rawCount > 0 && n === 0) {
+        if (failed && !n) {
           note.className = 'grammar-note warn';
-          note.textContent = 'The checker returned suggestions, but none matched the text in the preview — it likely didn’t parse the report cleanly. Re-run it, or review the wording manually before trusting this.';
-        } else if (rawCount === 0) {
+          note.textContent = 'The check timed out before finishing. Try again — if it keeps timing out, the report may be very large; split the review.';
+        } else if (failed) {
+          note.className = 'grammar-note warn';
+          note.textContent = 'Flagged ' + n + ' line(s), but ' + failed + ' section(s) timed out and weren’t fully checked. Re-run to cover them.';
+        } else if (!n) {
           note.className = 'grammar-note';
-          note.textContent = 'No sentences were flagged. This is not a guarantee the writing is perfect — only that the automatic check found nothing obvious. A quick human skim is still worth it.';
+          note.textContent = 'No lines were flagged. Not a guarantee the writing is perfect — a quick human skim is still worth it.';
         } else {
           note.className = 'grammar-note';
           note.textContent = '';
         }
       }
-      Toast.show(n ? n + ' sentence(s) flagged. Click each to review.' : 'Check complete — see the note below.', n ? '' : 'ok');
+      Toast.show(n ? n + ' line(s) flagged. Click each to review.' : 'Check complete — see the note.', n ? '' : 'ok');
     } catch (e) {
-      Toast.show(e.message || 'Grammar check failed.', 'err');
+      Toast.show(e.message === 'timed-out' ? 'Grammar check timed out — please try again.' : (e.message || 'Grammar check failed.'), 'err');
     } finally {
-      btn.disabled = false; btn.textContent = 'Run grammar check';
+      prog.stop('Run grammar check');
     }
   },
   // wrap each flagged sentence in the (editable) preview with a clickable span
