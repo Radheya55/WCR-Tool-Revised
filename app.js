@@ -6,7 +6,7 @@
    Original Google Doc is never modified.
    ═══════════════════════════════════════════════════════════════ */
 const CFG = window.WCRR_CONFIG || { DEMO_MODE: true };
-const BUILD = 'v15';
+const BUILD = 'v16';
 
 const State = {
   user: null,
@@ -15,7 +15,7 @@ const State = {
   coverage: [],        // {section, point}  (uncovered only)
   coveragePoints: [],  // {point, covered, section}  (full list)
   grammar: [],         // {id, original, suggestion, status:'open'|'accepted'|'rejected'}
-  coverageDone: false,
+  coverageDone: false, pendingChanges: [],
   docLoaded: false,    // true ONLY after a document actually renders
 };
 
@@ -412,11 +412,27 @@ const Preview = {
         const wordy = flat.filter(t => Preview._isProse(t)).length;
         if ((flat.length - wordy) > wordy) return;              // number grid → skip
 
-        // Shape detection: is this a 2-column label/value table?
-        const twoColRows = rows.filter(r => r.filter(x => x && x.trim()).length === 2);
-        const isKV = twoColRows.length >= Math.max(2, rows.length * 0.5);
+        // Shape detection.
+        const rowCells = rows.map(r => r.filter(x => x && x.trim()));
+        const maxCols = Math.max(...rowCells.map(r => r.length));
+        const twoColRows = rowCells.filter(r => r.length === 2).length;
 
-        if (isKV) {
+        // Single big cell(s) only (e.g. Maintenance Summary) → subheads+bullets
+        if (maxCols <= 1) {
+          rows.forEach(cells => {
+            cells.filter(t => t && t.trim()).forEach(t => {
+              if (!Preview._isProse(t)) return;
+              if (/^(ok|nil|none|-|\u2013|\u2014)$/i.test(t.trim())) return;
+              const parts = Preview._splitSentences(t);
+              if (parts.length > 1) Preview._emitWithSubheads(parts, blocks);
+              else blocks.push({ t: 'p', text: t });
+            });
+          });
+          return;
+        }
+
+        // Exactly two columns, label-like first column → label/value KV table
+        if (maxCols === 2 && twoColRows >= Math.max(2, rows.length * 0.5)) {
           const kv = [];
           rows.forEach(r => {
             const ne = r.filter(x => x && x.trim());
@@ -427,16 +443,18 @@ const Preview = {
           return;
         }
 
-        // Otherwise: prose table (Maintenance Summary, Scope) → subheads+bullets
-        rows.forEach(cells => {
-          cells.filter(t => t && t.trim()).forEach(t => {
-            if (!Preview._isProse(t)) return;
-            if (/^(ok|nil|none|-|\u2013|\u2014)$/i.test(t.trim())) return;
-            const parts = Preview._splitSentences(t);
-            if (parts.length > 1) Preview._emitWithSubheads(parts, blocks);
-            else blocks.push({ t: 'p', text: t });
-          });
-        });
+        // 3+ columns (inspection checklists, work-carried-out) → full blue table,
+        // all columns preserved. First row treated as header if it's short labels.
+        const cols = maxCols;
+        const grid = rows.map(r => { const a = r.slice(0, cols); while (a.length < cols) a.push(''); return a; });
+        if (grid.length) {
+          const first = grid[0];
+          const headLike = first.filter(Boolean).length >= 2 &&
+            first.filter(Boolean).every(x => x.length <= 24 && !/[.!?]$/.test(x));
+          if (headLike) first.__head = true;
+          blocks.push({ t: 'gtable', cols, rows: grid });
+        }
+        return;
       }
     });
 
@@ -479,37 +497,49 @@ const Preview = {
     const body = document.getElementById('doc-body');
     let html = '', openList = false;
     const closeList = () => { if (openList) { html += '</ul>'; openList = false; } };
+    // d() tags an element with its original text so manual edits can be detected
+    const d = (t) => `data-orig="${esc(t).replace(/"/g, '&quot;')}"`;
     blocks.forEach(b => {
-      if (b.t === 'li') { if (!openList) { html += '<ul>'; openList = true; } html += `<li>${esc(b.text)}</li>`; return; }
+      if (b.t === 'li') { if (!openList) { html += '<ul>'; openList = true; } html += `<li ${d(b.text)}>${esc(b.text)}</li>`; return; }
       closeList();
       if (b.t === 'h1') html += `<h1>${esc(b.text)}</h1>`;
-      else if (b.t === 'h2') html += `<h2>${esc(b.text)}</h2>`;
-      else if (b.t === 'h3') html += `<h3>${esc(b.text)}</h3>`;
-      else if (b.t === 'p') html += `<p>${esc(b.text)}</p>`;
+      else if (b.t === 'h3') html += `<h3 ${d(b.text)}>${esc(b.text)}</h3>`;
+      else if (b.t === 'p') html += `<p ${d(b.text)}>${esc(b.text)}</p>`;
       else if (b.t === 'section') html += `<h2 class="sec-title">${esc(b.text)}</h2>`;
-      else if (b.t === 'toc') html += '<div class="toc"><div class="toc-h">Contents</div><ol>' +
+      else if (b.t === 'toc') html += '<div class="toc" contenteditable="false"><div class="toc-h">Contents</div><ol>' +
         b.items.map(i => `<li>${esc(i)}</li>`).join('') + '</ol></div>';
-      else if (b.t === 'subhead') html += `<p class="sub-head">${esc(b.text)}</p>`;
-      else if (b.t === 'bullets') html += '<ul class="pt-list">' + b.items.map(i => `<li>${esc(i)}</li>`).join('') + '</ul>';
-      else if (b.t === 'kvtable') html += '<table class="kv">' + b.rows.map(r =>
-        `<tr><td class="kv-k">${esc(r[0])}</td><td class="kv-v">${esc(r[1])}</td></tr>`).join('') + '</table>';
-      else if (b.t === 'img') html += `<img class="doc-img" src="${b.src}" loading="lazy" alt="figure"/>`;
-      else if (b.t === 'table') {
-        const multiCol = b.rows.length > 1 && (b.rows[0] || []).length > 1;
-        html += '<table>' + b.rows.map((r, ri) =>
-          '<tr>' + r.map(cell => {
-            const txt = (cell && cell.text) || '';
-            const imgs = (cell && cell.imgs) || [];
-            const inner = esc(txt) + imgs.map(s => `<img class="doc-img" src="${s}" loading="lazy" alt="figure"/>`).join('');
-            return (multiCol && ri === 0) ? `<th>${inner}</th>` : `<td>${inner}</td>`;
-          }).join('') + '</tr>'
-        ).join('') + '</table>';
+      else if (b.t === 'subhead') html += `<p class="sub-head" ${d(b.text)}>${esc(b.text)}</p>`;
+      else if (b.t === 'bullets') html += '<ul class="pt-list">' + b.items.map(i => `<li ${d(i)}>${esc(i)}</li>`).join('') + '</ul>';
+      else if (b.t === 'kvtable') html += '<table class="gt">' + b.rows.map(r =>
+        `<tr><td class="gt-k" ${d(r[0])}>${esc(r[0])}</td><td class="gt-v" ${d(r[1])}>${esc(r[1])}</td></tr>`).join('') + '</table>';
+      else if (b.t === 'gtable') {
+        html += '<table class="gt">' + b.rows.map((r) => {
+          const ne = r.filter(x => x && x.trim());
+          // single-cell row → full-width sub-header band
+          if (ne.length === 1) return `<tr><td class="gt-band" colspan="${b.cols}" ${d(ne[0])}>${esc(ne[0])}</td></tr>`;
+          const tag = r.__head ? 'th' : 'td';
+          return '<tr>' + r.map(cell => `<${tag} ${d(cell || '')}>${esc(cell || '')}</${tag}>`).join('') + '</tr>';
+        }).join('') + '</table>';
       }
+      else if (b.t === 'img') html += `<img class="doc-img" src="${b.src}" loading="lazy" alt="figure"/>`;
     });
     closeList();
     body.innerHTML = html;
     body.setAttribute('contenteditable', 'true');
     body.setAttribute('spellcheck', 'false');
+  },
+  // Diff every tagged element: returns [{from, to}] for text the user changed
+  // (covers BOTH accepted grammar fixes and free-hand typing). Rejected
+  // grammar reverts the text, so it naturally produces no diff.
+  collectChanges() {
+    const body = document.getElementById('doc-body');
+    const out = [];
+    body.querySelectorAll('[data-orig]').forEach(el => {
+      const orig = (el.getAttribute('data-orig') || '').trim();
+      const now = (el.textContent || '').trim();
+      if (orig && now && orig !== now && orig.length >= 4) out.push({ from: orig, to: now });
+    });
+    return out;
   }
 };
 
@@ -740,23 +770,22 @@ const Export = {
   },
   // Build the full-screen review: corrected preview + list of changes.
   review() {
-    const accepted = State.grammar.filter(g => g.status === 'accepted');
-    // clone the (already corrected) preview so the user sees the final text
+    const changes = Preview.collectChanges();   // grammar fixes + manual edits
+    State.pendingChanges = changes;
     document.getElementById('confirm-doc-body').innerHTML =
       document.getElementById('doc-body').innerHTML;
-    // change list
     const list = document.getElementById('confirm-change-list');
-    if (!accepted.length) {
-      list.innerHTML = '<p class="muted" style="font-size:12.5px">No grammar fixes accepted — the copy will be identical to the original.</p>';
+    if (!changes.length) {
+      list.innerHTML = '<p class="muted" style="font-size:12.5px">No edits made — the copy will be identical to the original.</p>';
     } else {
-      list.innerHTML = accepted.map(g => `
+      list.innerHTML = changes.map(ch => `
         <div class="chg">
-          <span class="chg-was">${esc(g.original)}</span>
-          <span class="chg-now">${esc(g.suggestion)}</span>
+          <span class="chg-was">${esc(ch.from)}</span>
+          <span class="chg-now">${esc(ch.to)}</span>
         </div>`).join('');
     }
     document.getElementById('confirm-sub').textContent =
-      accepted.length + ' fix(es) will be written into a new copy named “' +
+      changes.length + ' change(s) will be written into a new copy named “' +
       (State.docTitle || 'WCR') + ' — Revised ' + new Date().toISOString().slice(0,10) + '”. The original Doc is never changed.';
     document.getElementById('confirm-result').classList.add('hidden');
     document.getElementById('confirm-create-btn').classList.remove('hidden');
@@ -769,7 +798,7 @@ const Export = {
     const btn = document.getElementById('confirm-create-btn');
     btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Working…';
     try {
-      const accepted = State.grammar.filter(g => g.status === 'accepted');
+      const changes = State.pendingChanges || Preview.collectChanges();
 
       if (CFG.DEMO_MODE || !State.docId) {
         await Export.ensureJSZip();
@@ -785,19 +814,19 @@ const Export = {
       const copyId = await GoogleAPI.copyDoc(State.docId, copyName);
 
       let changed = 0;
-      if (accepted.length) {
-        btn.innerHTML = '<span class="spin"></span>Applying ' + accepted.length + ' fix(es)…';
-        const reps = accepted.map(g => ({ from: g.original, to: g.suggestion }));
+      if (changes.length) {
+        btn.innerHTML = '<span class="spin"></span>Applying ' + changes.length + ' change(s)…';
+        const reps = changes.map(ch => ({ from: ch.from, to: ch.to }));
         const res = await GoogleAPI.applyReplacements(copyId, reps);
         (res.replies || []).forEach(rep => { changed += (rep.replaceAllText?.occurrencesChanged || 0); });
       }
 
       const url = 'https://docs.google.com/document/d/' + copyId + '/edit';
-      Export._showCopyLink(url, accepted.length, changed);
+      Export._showCopyLink(url, changes.length, changed);
       document.getElementById('confirm-create-btn').classList.add('hidden');
       History.add({
         id: 'r' + Date.now(), title: State.docTitle, at: Date.now(),
-        dwrCount: State.dwrs.length, fixCount: accepted.length, copyUrl: url
+        dwrCount: State.dwrs.length, fixCount: changes.length, copyUrl: url
       });
       Toast.show('Revised copy created in your Drive. Original untouched.', 'ok');
     } catch (e) {
