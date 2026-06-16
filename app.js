@@ -6,7 +6,7 @@
    Original Google Doc is never modified.
    ═══════════════════════════════════════════════════════════════ */
 const CFG = window.WCRR_CONFIG || { DEMO_MODE: true };
-const BUILD = 'v19';
+const BUILD = 'v20';
 
 const State = {
   user: null,
@@ -35,7 +35,7 @@ const Toast = {
 /* ───────────── Screen manager ───────────── */
 const Screen = {
   show(name) {
-    ['auth', 'home', 'review', 'confirm'].forEach(s =>
+    ['auth', 'home', 'drafts', 'review', 'confirm'].forEach(s =>
       document.getElementById('screen-' + s).classList.toggle('hidden', s !== name));
     document.getElementById('topbar').classList.toggle('hidden', name === 'auth');
   }
@@ -257,7 +257,8 @@ const Review = {
     Review._lock('card-export', true);
     Screen.show('review');
   },
-  backHome() { History.render(); Screen.show('home'); },
+  backHome() { Screen.show('home'); },
+  showDrafts() { History.render(); Screen.show('drafts'); },
   openHistory(id) {
     // sessions are summaries only (we never store the customer's doc); reopen starts fresh
     Toast.show('Past reviews are summaries only — start a fresh review to load the document again.');
@@ -662,12 +663,22 @@ const Grammar = {
     const btn = document.getElementById('grammar-btn');
     btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Checking…';
     try {
-      const text = document.getElementById('doc-body').innerText || '';
+      // Gather text per editable block (paragraphs AND every table cell), so
+      // nothing hides inside a table. Join as discrete lines for the checker.
+      const body = document.getElementById('doc-body');
+      const blockEls = body.querySelectorAll('[data-orig], p, li, td, th');
+      const seen = new Set();
+      const lines = [];
+      blockEls.forEach(el => {
+        const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (t && t.length >= 8 && /[A-Za-z]{3,}/.test(t) && !seen.has(t)) { seen.add(t); lines.push(t); }
+      });
+      const text = lines.join('\n');
       const res = await Worker.call('grammar', { report: text });
       const issues = (res && res.issues) || [];
       const rawCount = issues.length;
       // keep issues whose original text is present in the preview (whitespace-tolerant)
-      const haystack = (document.getElementById('doc-body').innerText || '').replace(/\s+/g, ' ');
+      const haystack = (body.innerText || '').replace(/\s+/g, ' ');
       State.grammar = issues
         .filter(it => it.original && haystack.includes(it.original.replace(/\s+/g, ' ').trim()))
         .map((it, i) => ({ id: 'g' + i, original: it.original.replace(/\s+/g, ' ').trim(), suggestion: it.suggestion, status: 'open' }));
