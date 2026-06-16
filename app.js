@@ -6,7 +6,7 @@
    Original Google Doc is never modified.
    ═══════════════════════════════════════════════════════════════ */
 const CFG = window.WCRR_CONFIG || { DEMO_MODE: true };
-const BUILD = 'v13';
+const BUILD = 'v14';
 
 const State = {
   user: null,
@@ -263,7 +263,13 @@ const Review = {
     Toast.show('Past reviews are summaries only — start a fresh review to load the document again.');
     Review.startNew();
   },
-  _lock(cardId, locked) { document.getElementById(cardId).classList.toggle('disabled', locked); }
+  _lock(cardId, locked) {
+    const card = document.getElementById(cardId);
+    card.classList.toggle('disabled', locked);
+    // also flip the actual button's disabled attribute, not just the card class
+    const btn = card.querySelector('button');
+    if (btn) btn.disabled = locked;
+  },
 };
 
 /* ═════════════ Preview ═════════════ */
@@ -381,37 +387,76 @@ const Preview = {
         return;
       }
       if (el.table) {
-        // Decide whether this table is a TEXT table (History, Scope,
-        // Deviations, Maintenance Summary…) or a NUMBER GRID (calibration,
-        // load trial). Show text from text-tables; skip number grids whole.
-        const cells = [];
-        (el.table.tableRows || []).forEach(r =>
-          (r.tableCells || []).forEach(cell => {
-            const t = cellText(cell);
-            if (t) cells.push(t);
-          }));
-        if (!cells.length) return;
-        const wordy = cells.filter(t => Preview._isProse(t)).length;
-        const numericish = cells.length - wordy;
-        // A grid is dominated by bare numbers/short codes. If most non-empty
-        // cells are numeric, treat the whole table as a grid and skip it.
-        const isGrid = numericish > wordy;
-        if (isGrid) return;
-        // Text table: emit each cell that carries real words (any length),
-        // but drop trivial one/two-word status tokens like "OK"/"ok".
-        cells.forEach(t => {
-          if (Preview._isProse(t) && !/^(ok|nil|none|-|\u2013|\u2014)$/i.test(t.trim())) {
-            blocks.push({ t: 'p', text: t });
+        // Classify: TEXT table (History, Scope, Deviations, Maintenance…) vs
+        // NUMBER GRID (calibration, load trial). Skip grids whole.
+        const rows = (el.table.tableRows || []).map(r =>
+          (r.tableCells || []).map(cell => cellText(cell)));
+        const flat = rows.flat().filter(Boolean);
+        if (!flat.length) return;
+        const wordy = flat.filter(t => Preview._isProse(t)).length;
+        if ((flat.length - wordy) > wordy) return;   // mostly numbers → skip grid
+
+        rows.forEach(cells => {
+          const nonEmpty = cells.filter(c => c && c.trim());
+          if (!nonEmpty.length) return;
+
+          // 2-column "label | value" row → bold label, value(s) beneath
+          if (nonEmpty.length === 2 && Preview._isProse(nonEmpty[0])) {
+            const label = nonEmpty[0].trim();
+            const value = nonEmpty[1].trim();
+            blocks.push({ t: 'label', text: label });
+            if (Preview._isProse(value)) {
+              const parts = Preview._splitSentences(value);
+              if (parts.length > 1) blocks.push({ t: 'bullets', items: parts });
+              else blocks.push({ t: 'val', text: value });
+            } else if (value) {
+              blocks.push({ t: 'val', text: value });
+            }
+            return;
           }
+
+          // single big cell (Maintenance Summary / Scope) → sub-heads + bullets
+          nonEmpty.forEach(t => {
+            if (!Preview._isProse(t)) return;
+            if (/^(ok|nil|none|-|\u2013|\u2014)$/i.test(t.trim())) return;
+            const parts = Preview._splitSentences(t);
+            if (parts.length > 1) {
+              Preview._emitWithSubheads(parts, blocks);
+            } else {
+              blocks.push({ t: 'p', text: t });
+            }
+          });
         });
       }
     });
     return blocks;
   },
-  // "Prose" = contains a real word (2+ letters). Rejects pure numbers/units.
-  _isProse(t) {
-    if (!t) return false;
-    return /[A-Za-z]{2,}/.test(t);
+  _isProse(t) { return !!t && /[A-Za-z]{2,}/.test(t); },
+
+  // split a block of text into sentences / bullet-like points
+  _splitSentences(t) {
+    return t
+      .replace(/\s+/g, ' ')
+      .split(/(?<=[.!?])\s+(?=[A-Z0-9])/)   // sentence boundaries
+      .map(s => s.trim())
+      .filter(s => s.length > 1);
+  },
+
+  // turn a flat sentence list into {subhead}+{bullets}. A short fragment that
+  // ends with ':' (e.g. "Cylinder Heads:") becomes a bold sub-heading; the
+  // sentences after it become bullets under it.
+  _emitWithSubheads(parts, blocks) {
+    let bucket = [];
+    const flush = () => { if (bucket.length) { blocks.push({ t: 'bullets', items: bucket }); bucket = []; } };
+    parts.forEach(s => {
+      const heady = /:$/.test(s) && s.length < 60;          // "Cylinder Heads:"
+      // also catch "Word Word:" prefix inside a longer sentence
+      const m = !heady && s.match(/^([A-Z][A-Za-z ,/&-]{2,40}):\s+(.*)$/);
+      if (heady) { flush(); blocks.push({ t: 'subhead', text: s.replace(/:$/, '') }); }
+      else if (m) { flush(); blocks.push({ t: 'subhead', text: m[1] }); bucket.push(m[2]); }
+      else bucket.push(s);
+    });
+    flush();
   },
   renderModel(blocks) {
     const body = document.getElementById('doc-body');
@@ -424,6 +469,10 @@ const Preview = {
       else if (b.t === 'h2') html += `<h2>${esc(b.text)}</h2>`;
       else if (b.t === 'h3') html += `<h3>${esc(b.text)}</h3>`;
       else if (b.t === 'p') html += `<p>${esc(b.text)}</p>`;
+      else if (b.t === 'label') html += `<p class="kv-label">${esc(b.text)}</p>`;
+      else if (b.t === 'val') html += `<p class="kv-val">${esc(b.text)}</p>`;
+      else if (b.t === 'subhead') html += `<p class="sub-head">${esc(b.text)}</p>`;
+      else if (b.t === 'bullets') html += '<ul class="pt-list">' + b.items.map(i => `<li>${esc(i)}</li>`).join('') + '</ul>';
       else if (b.t === 'img') html += `<img class="doc-img" src="${b.src}" loading="lazy" alt="figure"/>`;
       else if (b.t === 'table') {
         const multiCol = b.rows.length > 1 && (b.rows[0] || []).length > 1;
