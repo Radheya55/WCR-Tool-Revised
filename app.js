@@ -6,7 +6,7 @@
    Original Google Doc is never modified.
    ═══════════════════════════════════════════════════════════════ */
 const CFG = window.WCRR_CONFIG || { DEMO_MODE: true };
-const BUILD = 'v16';
+const BUILD = 'v17';
 
 const State = {
   user: null,
@@ -586,7 +586,13 @@ const DWR = {
       State.coverage = (res && res.uncovered) || [];
       DWR.renderCoverage();
       const missing = State.coverage.length;
-      if (!State.coveragePoints.length) Toast.show('Couldn’t extract points from those DWRs — check they’re the right PDFs.', 'err');
+      const diag = (res && res._diag) || {};
+      if (!State.coveragePoints.length) {
+        if (diag.pdfs && !diag.extracted)
+          Toast.show('The DWRs uploaded, but no work items could be read from them. They may be scanned images or low quality — try clearer PDFs.', 'err');
+        else
+          Toast.show('Couldn’t extract points from those DWRs — check they’re the right PDFs.', 'err');
+      }
       else if (!missing) Toast.show('All ' + State.coveragePoints.length + ' DWR points appear covered.', 'ok');
       else Toast.show(missing + ' of ' + State.coveragePoints.length + ' DWR points are NOT covered — see the list.', 'err');
     } catch (e) {
