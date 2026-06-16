@@ -297,12 +297,12 @@ const Preview = {
         if (!docId) throw new Error('That doesn’t look like a Google Doc link.');
         // One popup, tied to the click, before any data fetch.
         await Promise.race([GoogleAPI.ensureToken(), timeout]);
-        const [doc, blob] = await Promise.race([
-          Promise.all([GoogleAPI.readDoc(docId), GoogleAPI.exportDocx(docId)]),
-          timeout
-        ]);
+        // Read ONLY the document text for the preview. The .docx export is
+        // heavy (Google refuses it on large image-rich docs: "too heavy to
+        // import"), so we defer it until the user actually clicks Download.
+        const doc = await Promise.race([GoogleAPI.readDoc(docId), timeout]);
         State.docId = docId;
-        State.origDocxBlob = blob;
+        State.origDocxBlob = null;   // fetched lazily at export time
         State.docTitle = doc.title || 'WCR';
         Preview.renderModel(Preview.docToModel(doc));
       }
@@ -626,6 +626,17 @@ const Export = {
       await Export.ensureJSZip();
       const accepted = State.grammar.filter(g => g.status === 'accepted');
       let blob;
+      // Try to fetch the original .docx NOW (deferred from load). On large
+      // image-heavy docs Google refuses this ("too heavy to import") — if so,
+      // fall back to building a clean .docx from the preview instead.
+      if (!State.origDocxBlob && State.docId && !CFG.DEMO_MODE) {
+        try {
+          State.origDocxBlob = await GoogleAPI.exportDocx(State.docId);
+        } catch (e) {
+          State.origDocxBlob = null;
+          Toast.show('Google couldn’t export the original (too large) — building a clean copy from the preview instead.', 'err');
+        }
+      }
       if (State.origDocxBlob && !CFG.DEMO_MODE) {
         blob = await Export.patchOriginal(State.origDocxBlob, accepted);
       } else {
