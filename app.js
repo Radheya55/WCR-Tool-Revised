@@ -6,7 +6,7 @@
    Original Google Doc is never modified.
    ═══════════════════════════════════════════════════════════════ */
 const CFG = window.WCRR_CONFIG || { DEMO_MODE: true };
-const BUILD = 'v22';
+const BUILD = 'v23';
 
 const State = {
   user: null,
@@ -695,10 +695,13 @@ const Grammar = {
       'Proofreading every section and sentence. Please wait — don’t refresh.');
     try {
       const body = document.getElementById('doc-body');
-      const blockEls = body.querySelectorAll('[data-orig], p, li, td, th');
+      // proofread prose only: skip section titles, kv labels, sub-heads, TOC, headings
+      const blockEls = body.querySelectorAll('p:not(.sec-title):not(.sub-head), li, td.gt-v, td:not(.gt-k):not(.gt-band)');
       const seen = new Set();
       const lines = [];
       blockEls.forEach(el => {
+        if (el.closest('.toc')) return;
+        if (el.classList.contains('gt-k') || el.classList.contains('sec-title') || el.classList.contains('sub-head')) return;
         const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
         if (t && t.length >= 6 && /[A-Za-z]{3,}/.test(t) && !seen.has(t)) { seen.add(t); lines.push(t); }
       });
