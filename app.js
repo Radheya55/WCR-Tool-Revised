@@ -239,9 +239,18 @@ const Review = {
 const Preview = {
   extractDocId(url) {
     if (!url) return null;
-    const m = url.match(/\/document\/d\/([a-zA-Z0-9_-]+)/) || url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    url = url.trim();
+    // published links:  /document/d/e/<id>/pub
+    let m = url.match(/\/document\/d\/e\/([a-zA-Z0-9_-]+)/);
     if (m) return m[1];
-    if (/^[a-zA-Z0-9_-]{20,}$/.test(url.trim())) return url.trim();
+    // standard:  /document/d/<id>/edit?tab=...   (stops at the next slash/?/#)
+    m = url.match(/\/document\/d\/([a-zA-Z0-9_-]+)/);
+    if (m) return m[1];
+    // open?id= or ?id=
+    m = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (m) return m[1];
+    // bare id pasted on its own
+    if (/^[a-zA-Z0-9_-]{20,}$/.test(url)) return url;
     return null;
   },
   async loadFromLink() {
