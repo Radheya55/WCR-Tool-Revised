@@ -15,7 +15,7 @@
 <header id="topbar" class="topbar hidden">
   <div class="brand"><span class="brand-mark">N</span><span class="brand-sub">WCR Review</span></div>
   <div class="topbar-right">
-    <span class="who" style="background:none;border:none;color:var(--white-dim);font-weight:400" title="build">build v8</span>
+    <span id="build-tag" class="who" style="background:none;border:none;color:var(--white-dim);font-weight:400" title="build">build —</span>
     <span id="demo-badge" class="demo-badge hidden">DEMO MODE</span>
     <span id="who" class="who"></span>
     <button id="logout-btn" class="ghost-btn" onclick="Auth.logout()">Sign out</button>
@@ -114,13 +114,38 @@
     <div class="rail-card disabled" id="card-export">
       <div class="rail-card-head">
         <span class="step-no">3</span>
-        <h3>Download</h3>
+        <h3>Revised copy</h3>
       </div>
-      <p class="rail-hint">Exports a revised .docx with your accepted changes. The original Google Doc is untouched.</p>
-      <button class="primary-btn full" id="export-btn" onclick="Export.run()" disabled>Download revised .docx</button>
+      <p class="rail-hint">Creates a copy of the Doc in your Drive — with all images, tables and formatting — and applies your accepted fixes in place. The original is never changed.</p>
+      <button class="primary-btn full" id="export-btn" onclick="Export.review()" disabled>Review &amp; create revised copy</button>
+      <div id="export-result" class="hidden" style="margin-top:12px"></div>
     </div>
 
   </aside>
+</section>
+
+<!-- ════ CONFIRM: full-screen review before writing to Google ════ -->
+<section id="screen-confirm" class="screen confirm-screen hidden">
+  <div class="confirm-head">
+    <div>
+      <h1>Review &amp; create revised copy</h1>
+      <p class="muted" id="confirm-sub">This is exactly what will be written into a new copy. The original Doc is never changed.</p>
+    </div>
+    <div class="confirm-head-actions">
+      <button class="ghost-btn" onclick="Export.cancelReview()">← Back to editing</button>
+      <button class="primary-btn" id="confirm-create-btn" onclick="Export.commit()">Create revised copy in Drive</button>
+    </div>
+  </div>
+  <div class="confirm-body">
+    <div class="confirm-preview">
+      <div class="doc-body" id="confirm-doc-body"></div>
+    </div>
+    <aside class="confirm-changes">
+      <h3>Changes to apply</h3>
+      <div id="confirm-change-list"></div>
+      <div id="confirm-result" class="hidden" style="margin-top:14px"></div>
+    </aside>
+  </div>
 </section>
 
 <!-- toast -->
