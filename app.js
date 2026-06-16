@@ -6,7 +6,7 @@
    Original Google Doc is never modified.
    ═══════════════════════════════════════════════════════════════ */
 const CFG = window.WCRR_CONFIG || { DEMO_MODE: true };
-const BUILD = 'v18';
+const BUILD = 'v19';
 
 const State = {
   user: null,
@@ -666,10 +666,11 @@ const Grammar = {
       const res = await Worker.call('grammar', { report: text });
       const issues = (res && res.issues) || [];
       const rawCount = issues.length;
-      // keep only issues whose original sentence is actually present in the preview
+      // keep issues whose original text is present in the preview (whitespace-tolerant)
+      const haystack = (document.getElementById('doc-body').innerText || '').replace(/\s+/g, ' ');
       State.grammar = issues
-        .filter(it => it.original && document.getElementById('doc-body').innerText.includes(it.original))
-        .map((it, i) => ({ id: 'g' + i, original: it.original, suggestion: it.suggestion, status: 'open' }));
+        .filter(it => it.original && haystack.includes(it.original.replace(/\s+/g, ' ').trim()))
+        .map((it, i) => ({ id: 'g' + i, original: it.original.replace(/\s+/g, ' ').trim(), suggestion: it.suggestion, status: 'open' }));
       Grammar.wrapAll();
       Grammar.render();
       const n = State.grammar.length;
