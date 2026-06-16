@@ -226,3 +226,11 @@ html, body { height:100%; background:var(--navy); color:var(--white);
 .chg-was { color:#f08070; text-decoration:line-through; display:block; margin-bottom:4px; }
 .chg-now { color:#7ef59a; display:block; }
 @media (max-width:900px){ .confirm-body { grid-template-columns:1fr; } .confirm-changes { border-left:none; border-top:1px solid var(--navy-border); } }
+
+/* ── structured preview: label/value, sub-headings, point lists ── */
+.doc-body .kv-label { font-weight:700; color:var(--navy); margin:14px 0 2px; font-size:13px; }
+.doc-body .kv-val { margin:0 0 4px; padding-left:2px; }
+.doc-body .sub-head { font-weight:700; color:var(--navy); margin:16px 0 4px; font-size:14px;
+  border-bottom:1px solid #d8dde6; padding-bottom:2px; }
+.doc-body .pt-list { margin:4px 0 12px 22px; }
+.doc-body .pt-list li { margin-bottom:5px; line-height:1.6; }
