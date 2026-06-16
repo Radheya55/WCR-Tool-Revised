@@ -6,7 +6,7 @@
    Original Google Doc is never modified.
    ═══════════════════════════════════════════════════════════════ */
 const CFG = window.WCRR_CONFIG || { DEMO_MODE: true };
-const BUILD = 'v14';
+const BUILD = 'v15';
 
 const State = {
   user: null,
@@ -360,10 +360,9 @@ const Preview = {
       DWR.refresh(); // re-evaluate Parse gating against the real load state
     }
   },
-  // Google Docs API JSON → text-only block model.
-  // Keeps headings, paragraphs, AND prose that lives inside table cells
-  // (the Maintenance Summary and Scope of Work are inside tables in these
-  // reports). Calibration/number-grid tables are skipped as noise.
+  // Google Docs API JSON → structured block model that reads like the original:
+  // section titles, two-column label/value tables, sub-headed bullet lists,
+  // and a generated table of contents. Number-grid tables are skipped.
   docToModel(doc) {
     const blocks = [];
     const c = (doc.body && doc.body.content) || [];
@@ -372,74 +371,92 @@ const Preview = {
     const cellText = (cell) => (cell.content || [])
       .map(cc => cc.paragraph ? (cc.paragraph.elements || [])
         .map(e => e.textRun ? e.textRun.content : '').join('') : '')
-      .join('').trim();
+      .join(' ').replace(/\s+/g, ' ').trim();
+    const isBoldOnly = (el) => {
+      const els = (el.paragraph?.elements || []).filter(e => e.textRun && e.textRun.content.trim());
+      return els.length > 0 && els.every(e => e.textRun.textStyle && e.textRun.textStyle.bold);
+    };
+
+    const sections = [];
+    let skipNextTable = false;
 
     c.forEach(el => {
       if (el.paragraph) {
         const style = el.paragraph.paragraphStyle?.namedStyleType || 'NORMAL_TEXT';
         const text = runText(el).trim();
         if (!text) return;
-        if (style === 'TITLE') blocks.push({ t: 'h1', text });
-        else if (style === 'HEADING_1' || style === 'HEADING_2') blocks.push({ t: 'h2', text });
-        else if (style === 'HEADING_3' || style === 'HEADING_4') blocks.push({ t: 'h3', text });
+        const isTitle = style === 'TITLE';
+        const isHeading = style === 'HEADING_1' || style === 'HEADING_2';
+        // a short, fully-bold normal paragraph is a section title in these docs
+        const isSectionByBold = style === 'NORMAL_TEXT' && isBoldOnly(el) && text.length < 70 && !el.paragraph.bullet;
+
+        if (isTitle) { blocks.push({ t: 'h1', text }); return; }
+        if (isHeading || isSectionByBold) {
+          if (/^contents$/i.test(text)) { skipNextTable = true; return; } // we build our own TOC
+          sections.push(text);
+          blocks.push({ t: 'section', text });
+          return;
+        }
+        if (style === 'HEADING_3' || style === 'HEADING_4') blocks.push({ t: 'h3', text });
         else if (el.paragraph.bullet) blocks.push({ t: 'li', text });
         else blocks.push({ t: 'p', text });
         return;
       }
+
       if (el.table) {
-        // Classify: TEXT table (History, Scope, Deviations, Maintenance…) vs
-        // NUMBER GRID (calibration, load trial). Skip grids whole.
         const rows = (el.table.tableRows || []).map(r =>
           (r.tableCells || []).map(cell => cellText(cell)));
+        if (skipNextTable) { skipNextTable = false; return; }   // the CONTENTS table
         const flat = rows.flat().filter(Boolean);
         if (!flat.length) return;
         const wordy = flat.filter(t => Preview._isProse(t)).length;
-        if ((flat.length - wordy) > wordy) return;   // mostly numbers → skip grid
+        if ((flat.length - wordy) > wordy) return;              // number grid → skip
 
+        // Shape detection: is this a 2-column label/value table?
+        const twoColRows = rows.filter(r => r.filter(x => x && x.trim()).length === 2);
+        const isKV = twoColRows.length >= Math.max(2, rows.length * 0.5);
+
+        if (isKV) {
+          const kv = [];
+          rows.forEach(r => {
+            const ne = r.filter(x => x && x.trim());
+            if (ne.length === 2) kv.push([ne[0].trim(), ne[1].trim()]);
+            else if (ne.length === 1 && Preview._isProse(ne[0])) kv.push([ne[0].trim(), '']);
+          });
+          if (kv.length) blocks.push({ t: 'kvtable', rows: kv });
+          return;
+        }
+
+        // Otherwise: prose table (Maintenance Summary, Scope) → subheads+bullets
         rows.forEach(cells => {
-          const nonEmpty = cells.filter(c => c && c.trim());
-          if (!nonEmpty.length) return;
-
-          // 2-column "label | value" row → bold label, value(s) beneath
-          if (nonEmpty.length === 2 && Preview._isProse(nonEmpty[0])) {
-            const label = nonEmpty[0].trim();
-            const value = nonEmpty[1].trim();
-            blocks.push({ t: 'label', text: label });
-            if (Preview._isProse(value)) {
-              const parts = Preview._splitSentences(value);
-              if (parts.length > 1) blocks.push({ t: 'bullets', items: parts });
-              else blocks.push({ t: 'val', text: value });
-            } else if (value) {
-              blocks.push({ t: 'val', text: value });
-            }
-            return;
-          }
-
-          // single big cell (Maintenance Summary / Scope) → sub-heads + bullets
-          nonEmpty.forEach(t => {
+          cells.filter(t => t && t.trim()).forEach(t => {
             if (!Preview._isProse(t)) return;
             if (/^(ok|nil|none|-|\u2013|\u2014)$/i.test(t.trim())) return;
             const parts = Preview._splitSentences(t);
-            if (parts.length > 1) {
-              Preview._emitWithSubheads(parts, blocks);
-            } else {
-              blocks.push({ t: 'p', text: t });
-            }
+            if (parts.length > 1) Preview._emitWithSubheads(parts, blocks);
+            else blocks.push({ t: 'p', text: t });
           });
         });
       }
     });
+
+    // insert a generated Table of Contents after the title
+    if (sections.length >= 3) {
+      const toc = { t: 'toc', items: sections };
+      const at = (blocks[0] && blocks[0].t === 'h1') ? 1 : 0;
+      blocks.splice(at, 0, toc);
+    }
     return blocks;
   },
   _isProse(t) { return !!t && /[A-Za-z]{2,}/.test(t); },
 
-  // split a block of text into sentences / bullet-like points
+  // sentence split that does NOT break on abbreviations (Mr. Josko stays whole)
   _splitSentences(t) {
-    return t
-      .replace(/\s+/g, ' ')
-      .split(/(?<=[.!?])\s+(?=[A-Z0-9])/)   // sentence boundaries
-      .map(s => s.trim())
-      .filter(s => s.length > 1);
+    t = (t || '').replace(/\s+/g, ' ').trim();
+    const ABBR = /\b(Mr|Mrs|Ms|Dr|Sr|Jr|St|No|Nos|Fig|Ref|Sl|vs|etc|approx|Rev|Sec|Sr\.No|DR|Dia|min|max|temp|Qty)\.\s/gi;
+    t = t.replace(ABBR, m => m.replace('. ', '.\u0001'));      // protect the space
+    let parts = t.split(/(?<=[.!?])\s+(?=[A-Z0-9])/);
+    return parts.map(s => s.replace(/\u0001/g, ' ').trim()).filter(s => s.length > 1);
   },
 
   // turn a flat sentence list into {subhead}+{bullets}. A short fragment that
@@ -469,10 +486,13 @@ const Preview = {
       else if (b.t === 'h2') html += `<h2>${esc(b.text)}</h2>`;
       else if (b.t === 'h3') html += `<h3>${esc(b.text)}</h3>`;
       else if (b.t === 'p') html += `<p>${esc(b.text)}</p>`;
-      else if (b.t === 'label') html += `<p class="kv-label">${esc(b.text)}</p>`;
-      else if (b.t === 'val') html += `<p class="kv-val">${esc(b.text)}</p>`;
+      else if (b.t === 'section') html += `<h2 class="sec-title">${esc(b.text)}</h2>`;
+      else if (b.t === 'toc') html += '<div class="toc"><div class="toc-h">Contents</div><ol>' +
+        b.items.map(i => `<li>${esc(i)}</li>`).join('') + '</ol></div>';
       else if (b.t === 'subhead') html += `<p class="sub-head">${esc(b.text)}</p>`;
       else if (b.t === 'bullets') html += '<ul class="pt-list">' + b.items.map(i => `<li>${esc(i)}</li>`).join('') + '</ul>';
+      else if (b.t === 'kvtable') html += '<table class="kv">' + b.rows.map(r =>
+        `<tr><td class="kv-k">${esc(r[0])}</td><td class="kv-v">${esc(r[1])}</td></tr>`).join('') + '</table>';
       else if (b.t === 'img') html += `<img class="doc-img" src="${b.src}" loading="lazy" alt="figure"/>`;
       else if (b.t === 'table') {
         const multiCol = b.rows.length > 1 && (b.rows[0] || []).length > 1;
@@ -557,6 +577,7 @@ const DWR = {
     const covered = pts.filter(p => p.covered).length;
     const missing = pts.length - covered;
     let html = `<div class="cov-summary"><strong>${covered}</strong> covered · <strong>${missing}</strong> not covered · ${pts.length} total</div>`;
+    html += `<div class="cov-confidence">This is an AI comparison of your DWRs against the report — not a guarantee. Scan the “covered” list below to confirm each was really written up before you rely on it.</div>`;
     // show NOT covered first (actionable), each with copy + the section to paste into
     pts.filter(p => !p.covered).forEach((p) => {
       const idx = State.coverage.findIndex(c => c.point === p.point);
@@ -605,6 +626,7 @@ const Grammar = {
       const text = document.getElementById('doc-body').innerText || '';
       const res = await Worker.call('grammar', { report: text });
       const issues = (res && res.issues) || [];
+      const rawCount = issues.length;
       // keep only issues whose original sentence is actually present in the preview
       State.grammar = issues
         .filter(it => it.original && document.getElementById('doc-body').innerText.includes(it.original))
@@ -616,7 +638,22 @@ const Grammar = {
       chip.textContent = n + ' sentence' + (n === 1 ? '' : 's') + ' flagged';
       chip.classList.toggle('hidden', n === 0);
       Review._lock('card-export', false);
-      Toast.show(n ? n + ' sentence(s) flagged. Click each to review.' : 'No problem sentences found.', n ? '' : 'ok');
+
+      // Honesty guard: differentiate "clean" from "the check didn't land".
+      const note = document.getElementById('grammar-note');
+      if (note) {
+        if (rawCount > 0 && n === 0) {
+          note.className = 'grammar-note warn';
+          note.textContent = 'The checker returned suggestions, but none matched the text in the preview — it likely didn’t parse the report cleanly. Re-run it, or review the wording manually before trusting this.';
+        } else if (rawCount === 0) {
+          note.className = 'grammar-note';
+          note.textContent = 'No sentences were flagged. This is not a guarantee the writing is perfect — only that the automatic check found nothing obvious. A quick human skim is still worth it.';
+        } else {
+          note.className = 'grammar-note';
+          note.textContent = '';
+        }
+      }
+      Toast.show(n ? n + ' sentence(s) flagged. Click each to review.' : 'Check complete — see the note below.', n ? '' : 'ok');
     } catch (e) {
       Toast.show(e.message || 'Grammar check failed.', 'err');
     } finally {
