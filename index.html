@@ -46,8 +46,28 @@
 <section id="screen-home" class="screen home-screen hidden">
   <div class="home-wrap">
     <div class="home-head">
-      <h1>Reviews</h1>
-      <button class="primary-btn" onclick="Review.startNew()">+ Create WCR Review</button>
+      <h1>WCR Review</h1>
+    </div>
+    <p class="muted" style="margin-bottom:24px">Review a finished Work Completion Report against its DWRs, fix the language, and create a clean revised copy.</p>
+    <div class="home-actions">
+      <button class="home-action-card primary" onclick="Review.startNew()">
+        <span class="hac-title">+ Create WCR Review</span>
+        <span class="hac-sub">Start a new review from a Google Doc link</span>
+      </button>
+      <button class="home-action-card" onclick="Review.showDrafts()">
+        <span class="hac-title">Historical Drafts</span>
+        <span class="hac-sub">Your past reviews and revised copies</span>
+      </button>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ HISTORICAL DRAFTS ══════════ -->
+<section id="screen-drafts" class="screen home-screen hidden">
+  <div class="home-wrap">
+    <div class="home-head">
+      <h1>Historical Drafts</h1>
+      <button class="ghost-btn" onclick="Screen.show('home')">← Home</button>
     </div>
     <div id="history-list" class="history-list"></div>
   </div>
