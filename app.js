@@ -6,7 +6,7 @@
    Original Google Doc is never modified.
    ═══════════════════════════════════════════════════════════════ */
 const CFG = window.WCRR_CONFIG || { DEMO_MODE: true };
-const BUILD = 'v17';
+const BUILD = 'v18';
 
 const State = {
   user: null,
@@ -588,10 +588,13 @@ const DWR = {
       const missing = State.coverage.length;
       const diag = (res && res._diag) || {};
       if (!State.coveragePoints.length) {
+        const d = (typeof diag.pdfs === 'number')
+          ? ` (received ${diag.pdfs} PDF(s), extracted ${diag.extracted} point(s))`
+          : ' (old worker response — redeploy worker.js)';
         if (diag.pdfs && !diag.extracted)
-          Toast.show('The DWRs uploaded, but no work items could be read from them. They may be scanned images or low quality — try clearer PDFs.', 'err');
+          Toast.show('DWRs uploaded but no work items could be read' + d + '. If the worker is current, the PDFs may be scanned images.', 'err');
         else
-          Toast.show('Couldn’t extract points from those DWRs — check they’re the right PDFs.', 'err');
+          Toast.show('Couldn’t extract points from those DWRs' + d + '.', 'err');
       }
       else if (!missing) Toast.show('All ' + State.coveragePoints.length + ' DWR points appear covered.', 'ok');
       else Toast.show(missing + ' of ' + State.coveragePoints.length + ' DWR points are NOT covered — see the list.', 'err');
