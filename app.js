@@ -6,7 +6,7 @@
    Original Google Doc is never modified.
    ═══════════════════════════════════════════════════════════════ */
 const CFG = window.WCRR_CONFIG || { DEMO_MODE: true };
-const BUILD = 'v11';
+const BUILD = 'v13';
 
 const State = {
   user: null,
@@ -354,26 +354,64 @@ const Preview = {
       DWR.refresh(); // re-evaluate Parse gating against the real load state
     }
   },
-  // Google Docs API JSON → text-only block model (headings + paragraphs).
-  // Tables and images are intentionally skipped: the review only needs prose,
-  // and skipping them keeps heavy reports fast and avoids Google's size limits.
+  // Google Docs API JSON → text-only block model.
+  // Keeps headings, paragraphs, AND prose that lives inside table cells
+  // (the Maintenance Summary and Scope of Work are inside tables in these
+  // reports). Calibration/number-grid tables are skipped as noise.
   docToModel(doc) {
     const blocks = [];
     const c = (doc.body && doc.body.content) || [];
     const runText = (el) => (el.paragraph?.elements || [])
       .map(e => e.textRun ? e.textRun.content : '').join('').replace(/\n$/, '');
+    const cellText = (cell) => (cell.content || [])
+      .map(cc => cc.paragraph ? (cc.paragraph.elements || [])
+        .map(e => e.textRun ? e.textRun.content : '').join('') : '')
+      .join('').trim();
+
     c.forEach(el => {
-      if (!el.paragraph) return;           // skip tables, images, section breaks
-      const style = el.paragraph.paragraphStyle?.namedStyleType || 'NORMAL_TEXT';
-      const text = runText(el).trim();
-      if (!text) return;
-      if (style === 'TITLE') blocks.push({ t: 'h1', text });
-      else if (style === 'HEADING_1' || style === 'HEADING_2') blocks.push({ t: 'h2', text });
-      else if (style === 'HEADING_3' || style === 'HEADING_4') blocks.push({ t: 'h3', text });
-      else if (el.paragraph.bullet) blocks.push({ t: 'li', text });
-      else blocks.push({ t: 'p', text });
+      if (el.paragraph) {
+        const style = el.paragraph.paragraphStyle?.namedStyleType || 'NORMAL_TEXT';
+        const text = runText(el).trim();
+        if (!text) return;
+        if (style === 'TITLE') blocks.push({ t: 'h1', text });
+        else if (style === 'HEADING_1' || style === 'HEADING_2') blocks.push({ t: 'h2', text });
+        else if (style === 'HEADING_3' || style === 'HEADING_4') blocks.push({ t: 'h3', text });
+        else if (el.paragraph.bullet) blocks.push({ t: 'li', text });
+        else blocks.push({ t: 'p', text });
+        return;
+      }
+      if (el.table) {
+        // Decide whether this table is a TEXT table (History, Scope,
+        // Deviations, Maintenance Summary…) or a NUMBER GRID (calibration,
+        // load trial). Show text from text-tables; skip number grids whole.
+        const cells = [];
+        (el.table.tableRows || []).forEach(r =>
+          (r.tableCells || []).forEach(cell => {
+            const t = cellText(cell);
+            if (t) cells.push(t);
+          }));
+        if (!cells.length) return;
+        const wordy = cells.filter(t => Preview._isProse(t)).length;
+        const numericish = cells.length - wordy;
+        // A grid is dominated by bare numbers/short codes. If most non-empty
+        // cells are numeric, treat the whole table as a grid and skip it.
+        const isGrid = numericish > wordy;
+        if (isGrid) return;
+        // Text table: emit each cell that carries real words (any length),
+        // but drop trivial one/two-word status tokens like "OK"/"ok".
+        cells.forEach(t => {
+          if (Preview._isProse(t) && !/^(ok|nil|none|-|\u2013|\u2014)$/i.test(t.trim())) {
+            blocks.push({ t: 'p', text: t });
+          }
+        });
+      }
     });
     return blocks;
+  },
+  // "Prose" = contains a real word (2+ letters). Rejects pure numbers/units.
+  _isProse(t) {
+    if (!t) return false;
+    return /[A-Za-z]{2,}/.test(t);
   },
   renderModel(blocks) {
     const body = document.getElementById('doc-body');
