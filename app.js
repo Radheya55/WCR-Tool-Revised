@@ -6,6 +6,7 @@
    Original Google Doc is never modified.
    ═══════════════════════════════════════════════════════════════ */
 const CFG = window.WCRR_CONFIG || { DEMO_MODE: true };
+const BUILD = 'v11';
 
 const State = {
   user: null,
@@ -34,7 +35,7 @@ const Toast = {
 /* ───────────── Screen manager ───────────── */
 const Screen = {
   show(name) {
-    ['auth', 'home', 'review'].forEach(s =>
+    ['auth', 'home', 'review', 'confirm'].forEach(s =>
       document.getElementById('screen-' + s).classList.toggle('hidden', s !== name));
     document.getElementById('topbar').classList.toggle('hidden', name === 'auth');
   }
@@ -146,7 +147,7 @@ const History = {
 const GoogleAPI = {
   token: null,
   _pending: null,   // shared in-flight token request (prevents double popups)
-  SCOPES: 'https://www.googleapis.com/auth/documents.readonly https://www.googleapis.com/auth/drive.readonly',
+  SCOPES: 'https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/drive',
   ensureToken() {
     if (CFG.DEMO_MODE) return Promise.reject(new Error('demo'));
     if (GoogleAPI.token) return Promise.resolve(GoogleAPI.token);
@@ -181,6 +182,36 @@ const GoogleAPI = {
     const r = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
     if (!r.ok) throw new Error('Export failed (' + r.status + '): ' + (await GoogleAPI._reason(r)));
     return r.blob();
+  },
+  // Make a copy of the Doc in the user's Drive. Returns the new file id.
+  async copyDoc(docId, newName) {
+    const token = await GoogleAPI.ensureToken();
+    const r = await fetch(`https://www.googleapis.com/drive/v3/files/${docId}/copy`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName })
+    });
+    if (!r.ok) throw new Error('Copy failed (' + r.status + '): ' + (await GoogleAPI._reason(r)));
+    const j = await r.json();
+    return j.id;
+  },
+  // Apply text replacements to a Doc via batchUpdate. reps = [{from, to}].
+  // Each becomes a replaceAllText request (matchCase true, exact text).
+  async applyReplacements(docId, reps) {
+    const token = await GoogleAPI.ensureToken();
+    const requests = reps.map(rep => ({
+      replaceAllText: {
+        containsText: { text: rep.from, matchCase: true },
+        replaceText: rep.to
+      }
+    }));
+    const r = await fetch(`https://docs.googleapis.com/v1/documents/${docId}:batchUpdate`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requests })
+    });
+    if (!r.ok) throw new Error('Apply failed (' + r.status + '): ' + (await GoogleAPI._reason(r)));
+    return r.json(); // contains replies with occurrencesChanged counts
   },
   async _reason(r) {
     try {
@@ -308,7 +339,6 @@ const Preview = {
       }
       // success — NOW the document is genuinely loaded
       State.docLoaded = true;
-      Review._lock('card-grammar', false); // grammar available as soon as a doc is loaded
       document.getElementById('doc-title').textContent = State.docTitle;
       empty.classList.add('hidden');
       document.getElementById('doc-body').classList.remove('hidden');
@@ -324,59 +354,24 @@ const Preview = {
       DWR.refresh(); // re-evaluate Parse gating against the real load state
     }
   },
-  // Google Docs API JSON → our simple block model
+  // Google Docs API JSON → text-only block model (headings + paragraphs).
+  // Tables and images are intentionally skipped: the review only needs prose,
+  // and skipping them keeps heavy reports fast and avoids Google's size limits.
   docToModel(doc) {
     const blocks = [];
     const c = (doc.body && doc.body.content) || [];
-    const inlineObjs = doc.inlineObjects || {};
-    // resolve an inline image element to its image URL
-    const imgUrl = (objId) => {
-      try {
-        const eo = inlineObjs[objId].inlineObjectProperties.embeddedObject;
-        return eo.imageProperties?.contentUri || (eo.embeddedDrawingProperties ? null : null);
-      } catch (e) { return null; }
-    };
     const runText = (el) => (el.paragraph?.elements || [])
       .map(e => e.textRun ? e.textRun.content : '').join('').replace(/\n$/, '');
-    // collect any inline images inside a paragraph's elements
-    const paraImages = (el) => (el.paragraph?.elements || [])
-      .filter(e => e.inlineObjectElement)
-      .map(e => imgUrl(e.inlineObjectElement.inlineObjectId))
-      .filter(Boolean);
-
     c.forEach(el => {
-      if (el.paragraph) {
-        const imgs = paraImages(el);
-        imgs.forEach(src => blocks.push({ t: 'img', src }));
-        const style = el.paragraph.paragraphStyle?.namedStyleType || 'NORMAL_TEXT';
-        const text = runText(el);
-        if (!text.trim()) return;
-        if (style === 'TITLE') blocks.push({ t: 'h1', text });
-        else if (style === 'HEADING_1' || style === 'HEADING_2') blocks.push({ t: 'h2', text });
-        else if (style === 'HEADING_3') blocks.push({ t: 'h3', text });
-        else if (el.paragraph.bullet) blocks.push({ t: 'li', text });
-        else blocks.push({ t: 'p', text });
-      } else if (el.table) {
-        const rows = (el.table.tableRows || []).map(r =>
-          (r.tableCells || []).map(cell => {
-            // pull text AND any images from the cell
-            let cellText = '';
-            const cellImgs = [];
-            (cell.content || []).forEach(cc => {
-              if (cc.paragraph) {
-                cellText += (cc.paragraph.elements || []).map(e => e.textRun ? e.textRun.content : '').join('');
-                (cc.paragraph.elements || []).forEach(e => {
-                  if (e.inlineObjectElement) {
-                    const u = imgUrl(e.inlineObjectElement.inlineObjectId);
-                    if (u) cellImgs.push(u);
-                  }
-                });
-              }
-            });
-            return { text: cellText.trim(), imgs: cellImgs };
-          }));
-        blocks.push({ t: 'table', rows });
-      }
+      if (!el.paragraph) return;           // skip tables, images, section breaks
+      const style = el.paragraph.paragraphStyle?.namedStyleType || 'NORMAL_TEXT';
+      const text = runText(el).trim();
+      if (!text) return;
+      if (style === 'TITLE') blocks.push({ t: 'h1', text });
+      else if (style === 'HEADING_1' || style === 'HEADING_2') blocks.push({ t: 'h2', text });
+      else if (style === 'HEADING_3' || style === 'HEADING_4') blocks.push({ t: 'h3', text });
+      else if (el.paragraph.bullet) blocks.push({ t: 'li', text });
+      else blocks.push({ t: 'p', text });
     });
     return blocks;
   },
@@ -619,41 +614,82 @@ const Export = {
       document.head.appendChild(s);
     });
   },
-  async run() {
-    const btn = document.getElementById('export-btn');
-    btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Building…';
+  // Build the full-screen review: corrected preview + list of changes.
+  review() {
+    const accepted = State.grammar.filter(g => g.status === 'accepted');
+    // clone the (already corrected) preview so the user sees the final text
+    document.getElementById('confirm-doc-body').innerHTML =
+      document.getElementById('doc-body').innerHTML;
+    // change list
+    const list = document.getElementById('confirm-change-list');
+    if (!accepted.length) {
+      list.innerHTML = '<p class="muted" style="font-size:12.5px">No grammar fixes accepted — the copy will be identical to the original.</p>';
+    } else {
+      list.innerHTML = accepted.map(g => `
+        <div class="chg">
+          <span class="chg-was">${esc(g.original)}</span>
+          <span class="chg-now">${esc(g.suggestion)}</span>
+        </div>`).join('');
+    }
+    document.getElementById('confirm-sub').textContent =
+      accepted.length + ' fix(es) will be written into a new copy named “' +
+      (State.docTitle || 'WCR') + ' — Revised ' + new Date().toISOString().slice(0,10) + '”. The original Doc is never changed.';
+    document.getElementById('confirm-result').classList.add('hidden');
+    document.getElementById('confirm-create-btn').classList.remove('hidden');
+    Screen.show('confirm');
+  },
+  cancelReview() { Screen.show('review'); },
+
+  // Actually copy the Doc in Drive and apply the accepted fixes.
+  async commit() {
+    const btn = document.getElementById('confirm-create-btn');
+    btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Working…';
     try {
-      await Export.ensureJSZip();
       const accepted = State.grammar.filter(g => g.status === 'accepted');
-      let blob;
-      // Try to fetch the original .docx NOW (deferred from load). On large
-      // image-heavy docs Google refuses this ("too heavy to import") — if so,
-      // fall back to building a clean .docx from the preview instead.
-      if (!State.origDocxBlob && State.docId && !CFG.DEMO_MODE) {
-        try {
-          State.origDocxBlob = await GoogleAPI.exportDocx(State.docId);
-        } catch (e) {
-          State.origDocxBlob = null;
-          Toast.show('Google couldn’t export the original (too large) — building a clean copy from the preview instead.', 'err');
-        }
+
+      if (CFG.DEMO_MODE || !State.docId) {
+        await Export.ensureJSZip();
+        const blob = await Export.buildFromPreview();
+        Export._download(blob, (State.docTitle || 'WCR').replace(/[^\w\- ]+/g, '').replace(/\s+/g, '_') + '_revised.docx');
+        Toast.show('Demo: built a clean revised .docx.', 'ok');
+        return;
       }
-      if (State.origDocxBlob && !CFG.DEMO_MODE) {
-        blob = await Export.patchOriginal(State.origDocxBlob, accepted);
-      } else {
-        blob = await Export.buildFromPreview();
+
+      const date = new Date().toISOString().slice(0, 10);
+      const copyName = (State.docTitle || 'WCR') + ' — Revised ' + date;
+      btn.innerHTML = '<span class="spin"></span>Copying…';
+      const copyId = await GoogleAPI.copyDoc(State.docId, copyName);
+
+      let changed = 0;
+      if (accepted.length) {
+        btn.innerHTML = '<span class="spin"></span>Applying ' + accepted.length + ' fix(es)…';
+        const reps = accepted.map(g => ({ from: g.original, to: g.suggestion }));
+        const res = await GoogleAPI.applyReplacements(copyId, reps);
+        (res.replies || []).forEach(rep => { changed += (rep.replaceAllText?.occurrencesChanged || 0); });
       }
-      const fname = (State.docTitle || 'WCR').replace(/[^\w\- ]+/g, '').replace(/\s+/g, '_') + '_revised.docx';
-      Export._download(blob, fname);
+
+      const url = 'https://docs.google.com/document/d/' + copyId + '/edit';
+      Export._showCopyLink(url, accepted.length, changed);
+      document.getElementById('confirm-create-btn').classList.add('hidden');
       History.add({
         id: 'r' + Date.now(), title: State.docTitle, at: Date.now(),
-        dwrCount: State.dwrs.length, fixCount: accepted.length
+        dwrCount: State.dwrs.length, fixCount: accepted.length, copyUrl: url
       });
-      Toast.show('Revised .docx downloaded. Original Doc untouched.', 'ok');
+      Toast.show('Revised copy created in your Drive. Original untouched.', 'ok');
     } catch (e) {
-      Toast.show(e.message || 'Export failed.', 'err');
+      Toast.show(e.message || 'Could not create the revised copy.', 'err');
     } finally {
-      btn.disabled = false; btn.textContent = 'Download revised .docx';
+      btn.disabled = false; btn.textContent = 'Create revised copy in Drive';
     }
+  },
+  _showCopyLink(url, total, changed) {
+    const note = document.getElementById('confirm-result');
+    if (!note) { window.open(url, '_blank'); return; }
+    note.classList.remove('hidden');
+    const warn = (total && changed < total)
+      ? `<div class="muted" style="margin-top:6px;font-size:11.5px">${changed} of ${total} fixes applied. A few sentences span Google’s internal formatting and couldn’t be matched exactly — open the copy to check those.</div>`
+      : '';
+    note.innerHTML = `<a class="primary-btn full" href="${url}" target="_blank" rel="noopener" style="display:block;text-align:center;text-decoration:none">Open revised copy in Google Docs</a>${warn}`;
   },
   // surgical text replacement inside the original docx (word/document.xml)
   async patchOriginal(blob, accepted) {
@@ -770,6 +806,7 @@ const Demo = {
 
 /* ───────────── boot ───────────── */
 (function init() {
+  var bt = document.getElementById('build-tag'); if (bt) bt.textContent = 'build ' + BUILD;
   document.getElementById('demo-badge').classList.toggle('hidden', !CFG.DEMO_MODE);
   Auth.loadEmployees();
   if (!Auth.restore()) Screen.show('auth');
