@@ -910,12 +910,20 @@ const Export = {
     }
     document.getElementById('confirm-sub').textContent =
       changes.length + ' change(s) will be written into a new copy named “' +
-      (State.docTitle || 'WCR') + ' — Revised ' + new Date().toISOString().slice(0,10) + '”. The original Doc is never changed.';
+      (State.docTitle || 'WCR') + ' — Revised WCR ' + Export._stamp() + '”. The original Doc is never changed.';
     document.getElementById('confirm-result').classList.add('hidden');
     document.getElementById('confirm-create-btn').classList.remove('hidden');
     Screen.show('confirm');
   },
   cancelReview() { Screen.show('review'); },
+
+  // local 24-hour timestamp: YYYY-MM-DD_HH_MM_SS
+  _stamp() {
+    const now = new Date();
+    const p = n => String(n).padStart(2, '0');
+    return now.getFullYear() + '-' + p(now.getMonth() + 1) + '-' + p(now.getDate())
+      + '_' + p(now.getHours()) + '_' + p(now.getMinutes()) + '_' + p(now.getSeconds());
+  },
 
   // Actually copy the Doc in Drive and apply the accepted fixes.
   async commit() {
@@ -932,8 +940,7 @@ const Export = {
         return;
       }
 
-      const date = new Date().toISOString().slice(0, 10);
-      const copyName = (State.docTitle || 'WCR') + ' — Revised ' + date;
+      const copyName = (State.docTitle || 'WCR') + ' — Revised WCR ' + Export._stamp();
       btn.innerHTML = '<span class="spin"></span>Copying…';
       const copyId = await GoogleAPI.copyDoc(State.docId, copyName);
 
