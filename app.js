@@ -6,7 +6,7 @@
    Original Google Doc is never modified.
    ═══════════════════════════════════════════════════════════════ */
 const CFG = window.WCRR_CONFIG || { DEMO_MODE: true };
-const BUILD = 'v28';
+const BUILD = 'v29';
 
 const State = {
   user: null,
@@ -288,7 +288,7 @@ const GoogleAPI = {
 /* ───────────── Worker (Gemini) — DWR coverage + grammar ───────────── */
 const Worker = {
   // Maps the tool's logical modes to your worker's routes.
-  ROUTES: { 'dwr-coverage': '/coverage-check', 'grammar': '/sentence-grammar' },
+  ROUTES: { 'dwr-coverage': '/coverage-check', 'grammar': '/sentence-grammar', 'extract-batch': '/extract-batch', 'compare-points': '/compare-points' },
   async call(mode, payload, timeoutMs) {
     if (CFG.DEMO_MODE) return Demo.worker(mode, payload);
     const route = Worker.ROUTES[mode];
@@ -651,35 +651,74 @@ const DWR = {
       return;
     }
     const btn = document.getElementById('dwr-parse-btn');
-    const LIMIT = 180;
-    const prog = Progress.start(btn, document.getElementById('dwr-note'), 'Parsing…', LIMIT,
-      'Reading the DWRs and comparing against the report. Please wait — don’t refresh.');
+    const note = document.getElementById('dwr-note');
+    const total = State.dwrs.length;
+    const WAVE = 5;                       // PDFs per request — keeps each call light
+    const WAVE_TIMEOUT = 90 * 1000;       // per wave
+    const COMPARE_TIMEOUT = 90 * 1000;
+    // overall budget scales with number of DWRs, shown as a reverse timer
+    const LIMIT = Math.min(600, Math.ceil(total / WAVE) * 60 + 60);
+
+    let left = LIMIT, done = 0;
+    btn.disabled = true;
+    const draw = (phase) => {
+      btn.innerHTML = '<span class="spin"></span>' + phase + ' ' + (left > 0 ? left + 's' : 'finishing…');
+    };
+    draw('Parsing…');
+    if (note) { note.className = 'grammar-note'; note.textContent = 'Parsed 0 of ' + total + ' DWRs… please wait, don’t refresh.'; }
+    const ticker = setInterval(() => { left--; draw('Parsing…'); if (left <= 0) clearInterval(ticker); }, 1000);
+
     try {
-      const res = await Worker.call('dwr-coverage', {
-        report: reportText,
-        dwrs: State.dwrs.map(d => ({ name: d.name, b64: d.b64 }))
-      }, (LIMIT - 5) * 1000);
-      State.coveragePoints = (res && res.points) || [];
-      State.coverage = (res && res.uncovered) || [];
+      // 1) EXTRACT in sequential waves, updating "X of N done" after each
+      const allPoints = [];
+      for (let i = 0; i < total; i += WAVE) {
+        const wave = State.dwrs.slice(i, i + WAVE);
+        let res;
+        try {
+          res = await Worker.call('extract-batch', { dwrs: wave.map(d => ({ name: d.name, b64: d.b64 })) }, WAVE_TIMEOUT);
+        } catch (e) {
+          // failed mid-run → tell the user how many to retry with
+          clearInterval(ticker);
+          const safe = Math.max(1, done);   // the count that processed cleanly
+          if (note) {
+            note.className = 'grammar-note warn';
+            note.textContent = 'Processed ' + done + ' of ' + total + ' DWRs, then it stopped. Please retry with ' + safe + ' or fewer DWRs.';
+          }
+          Toast.show('Too many DWRs for one run. Retry with ' + safe + ' or fewer.', 'err');
+          btn.disabled = false; btn.textContent = 'Parse';
+          return;
+        }
+        if (res && Array.isArray(res.points)) allPoints.push(...res.points);
+        done += wave.length;
+        if (note) note.textContent = 'Parsed ' + done + ' of ' + total + ' DWRs…';
+      }
+
+      if (!allPoints.length) {
+        clearInterval(ticker);
+        if (note) { note.className = 'grammar-note warn'; note.textContent = 'No work items could be read from those DWRs. They may be scanned images — try clearer PDFs.'; }
+        Toast.show('No points could be extracted from those DWRs.', 'err');
+        btn.disabled = false; btn.textContent = 'Parse';
+        return;
+      }
+
+      // 2) COMPARE all collected points against the report
+      if (note) note.textContent = 'All ' + total + ' DWRs parsed — comparing against the report…';
+      draw('Comparing…');
+      const cmp = await Worker.call('compare-points', { report: reportText, points: allPoints }, COMPARE_TIMEOUT);
+
+      State.coveragePoints = (cmp && cmp.points) || [];
+      State.coverage = (cmp && cmp.uncovered) || [];
       DWR.renderCoverage();
       const missing = State.coverage.length;
-      const diag = (res && res._diag) || {};
-      if (!State.coveragePoints.length) {
-        const d = (typeof diag.pdfs === 'number')
-          ? ` (received ${diag.pdfs} PDF(s), extracted ${diag.extracted} point(s))`
-          : ' (old worker response — redeploy worker.js)';
-        if (diag.pdfs && !diag.extracted)
-          Toast.show('DWRs uploaded but no work items could be read' + d + '. If the worker is current, the PDFs may be scanned images.', 'err');
-        else
-          Toast.show('Couldn’t extract points from those DWRs' + d + '.', 'err');
-      }
+      if (!State.coveragePoints.length) Toast.show('Couldn’t compare the extracted points — please try again.', 'err');
       else if (!missing) Toast.show('All ' + State.coveragePoints.length + ' DWR points appear covered.', 'ok');
       else Toast.show(missing + ' of ' + State.coveragePoints.length + ' DWR points are NOT covered — see the list.', 'err');
     } catch (e) {
-      Toast.show(e.message === 'timed-out' ? 'Parsing timed out — try fewer DWRs at once, or run it again.' : (e.message || 'Parse failed.'), 'err');
+      Toast.show(e.message === 'timed-out' ? 'The comparison timed out — please try again.' : (e.message || 'Parse failed.'), 'err');
     } finally {
-      prog.stop('Parse');
-      const dn = document.getElementById('dwr-note'); if (dn) dn.textContent = '';
+      clearInterval(ticker);
+      btn.disabled = false; btn.textContent = 'Parse';
+      if (note && !note.classList.contains('warn')) note.textContent = '';
     }
   },
   _currentReportText() {
