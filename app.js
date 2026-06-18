@@ -6,7 +6,7 @@
    Original Google Doc is never modified.
    ═══════════════════════════════════════════════════════════════ */
 const CFG = window.WCRR_CONFIG || { DEMO_MODE: true };
-const BUILD = 'v26';
+const BUILD = 'v27';
 
 const State = {
   user: null,
@@ -695,15 +695,18 @@ const DWR = {
     const missing = pts.length - covered;
     let html = `<div class="cov-summary"><strong>${covered}</strong> covered · <strong>${missing}</strong> not covered · ${pts.length} total</div>`;
     html += `<div class="cov-confidence">This is an AI comparison of your DWRs against the report — not a guarantee. Scan the “covered” list below to confirm each was really written up before you rely on it.</div>`;
-    // show NOT covered first (actionable): From DWR → belongs in WCR
+    // show NOT covered first (actionable): From DWR → Suggested section
     pts.filter(p => !p.covered).forEach((p) => {
       const idx = State.coverage.findIndex(c => c.point === p.point);
       const dwrSec = p.dwrSection ? esc(p.dwrSection) : 'DWR';
-      const wcrSec = esc(p.section || 'General');
+      const sec = (p.section || '').trim();
+      // the two discretionary phrases read on their own; sections get a prefix
+      const special = /^add to whichever|^scope differs/i.test(sec);
+      const sugg = sec ? (special ? esc(sec) : 'Suggested section: ' + esc(sec)) : 'Suggested section: your discretion';
       html += `<div class="cov-item">
         ${idx >= 0 ? `<button class="copy" onclick="DWR.copyPoint(${idx})">copy</button>` : ''}
         <span class="cov-flag miss">NOT COVERED</span>
-        <span class="cov-sec">From DWR: ${dwrSec} → belongs in WCR: ${wcrSec}</span>${esc(p.point)}
+        <span class="cov-sec">From DWR: ${dwrSec} → ${sugg}</span>${esc(p.point)}
       </div>`;
     });
     // then covered (muted), still showing the DWR source
