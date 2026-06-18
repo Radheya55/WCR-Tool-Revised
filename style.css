@@ -287,3 +287,10 @@ html, body { height:100%; background:var(--navy); color:var(--white);
 .home-action-card.primary .hac-sub { color:rgba(13,27,42,.7); }
 .hac-title { font-family:'DM Serif Display',serif; font-size:18px; color:var(--amber); }
 .hac-sub { font-size:12.5px; color:var(--white-dim); }
+
+/* ── historical drafts: date grouping + linked rows ── */
+.hist-group { margin-bottom:22px; }
+.hist-date { font-size:11px; font-weight:700; color:var(--amber); letter-spacing:.06em;
+  text-transform:uppercase; margin-bottom:8px; padding-bottom:5px; border-bottom:1px solid var(--navy-border); }
+a.hist-row { text-decoration:none; }
+a.hist-row .hist-title { color:var(--amber); }
