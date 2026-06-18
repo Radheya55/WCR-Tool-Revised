@@ -6,7 +6,7 @@
    Original Google Doc is never modified.
    ═══════════════════════════════════════════════════════════════ */
 const CFG = window.WCRR_CONFIG || { DEMO_MODE: true };
-const BUILD = 'v23';
+const BUILD = 'v25';
 
 const State = {
   user: null,
@@ -140,19 +140,32 @@ const History = {
     History.save(list.slice(0, 50));
   },
   render() {
-    const list = History.load();
+    const list = History.load().filter(h => h.copyUrl); // only completed revised copies
     const wrap = document.getElementById('history-list');
+    if (!wrap) return;
     if (!list.length) {
-      wrap.innerHTML = `<div class="hist-empty">No reviews yet. Start one with “Create WCR Review”.</div>`;
+      wrap.innerHTML = `<div class="hist-empty">No revised copies yet. Once you create a revised copy of a WCR, it will appear here.</div>`;
       return;
     }
-    wrap.innerHTML = list.map(h => `
-      <div class="hist-row" onclick="Review.openHistory('${h.id}')">
-        <div class="hist-main">
-          <span class="hist-title">${h.title || 'Untitled WCR'}</span>
-          <span class="hist-meta">${new Date(h.at).toLocaleString()} · ${h.dwrCount||0} DWR(s) · ${h.fixCount||0} fix(es)</span>
-        </div>
-        <span class="ghost-btn">Open</span>
+    // newest first, grouped by calendar date
+    list.sort((a, b) => b.at - a.at);
+    const groups = {};
+    list.forEach(h => {
+      const d = new Date(h.at);
+      const key = d.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+      (groups[key] = groups[key] || []).push(h);
+    });
+    wrap.innerHTML = Object.keys(groups).map(date => `
+      <div class="hist-group">
+        <div class="hist-date">${date}</div>
+        ${groups[date].map(h => `
+          <a class="hist-row" href="${h.copyUrl}" target="_blank" rel="noopener">
+            <div class="hist-main">
+              <span class="hist-title">${esc(h.title || 'Untitled WCR')} — Revised</span>
+              <span class="hist-meta">${new Date(h.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${h.fixCount || 0} change(s) applied</span>
+            </div>
+            <span class="ghost-btn">Open Google Doc ↗</span>
+          </a>`).join('')}
       </div>`).join('');
   }
 };
@@ -210,6 +223,41 @@ const GoogleAPI = {
     if (!r.ok) throw new Error('Copy failed (' + r.status + '): ' + (await GoogleAPI._reason(r)));
     const j = await r.json();
     return j.id;
+  },
+  // Append a row to a "WCR Revision Log" Google Sheet in the user's Drive,
+  // creating it once if needed. Uses the existing `drive` scope (which also
+  // authorizes the Sheets API). Needs the Sheets API enabled in the project.
+  async logRevision(wcrName, docUrl) {
+    const token = await GoogleAPI.ensureToken();
+    const LOG_NAME = 'WCR Revision Log';
+    const auth = { Authorization: 'Bearer ' + token };
+    const jsonAuth = { ...auth, 'Content-Type': 'application/json' };
+
+    let sheetId = localStorage.getItem('wcrr_logsheet');
+    if (!sheetId) {
+      const q = encodeURIComponent(`name='${LOG_NAME}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`);
+      const r = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id,name)`, { headers: auth });
+      if (r.ok) { const j = await r.json(); if (j.files && j.files.length) sheetId = j.files[0].id; }
+    }
+    if (!sheetId) {
+      const cr = await fetch('https://www.googleapis.com/drive/v3/files', {
+        method: 'POST', headers: jsonAuth,
+        body: JSON.stringify({ name: LOG_NAME, mimeType: 'application/vnd.google-apps.spreadsheet' })
+      });
+      if (!cr.ok) throw new Error('log-create-failed');
+      sheetId = (await cr.json()).id;
+      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A1?valueInputOption=USER_ENTERED`, {
+        method: 'PUT', headers: jsonAuth,
+        body: JSON.stringify({ values: [['Date', 'WCR', 'Revised Copy Link']] })
+      });
+    }
+    localStorage.setItem('wcrr_logsheet', sheetId);
+    const ar = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A1:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
+      method: 'POST', headers: jsonAuth,
+      body: JSON.stringify({ values: [[new Date().toLocaleString(), wcrName, docUrl]] })
+    });
+    if (!ar.ok) { localStorage.removeItem('wcrr_logsheet'); throw new Error('log-append-failed'); }
+    return 'https://docs.google.com/spreadsheets/d/' + sheetId + '/edit';
   },
   // Apply text replacements to a Doc via batchUpdate. reps = [{from, to}].
   // Each becomes a replaceAllText request (matchCase true, exact text).
@@ -898,27 +946,34 @@ const Export = {
       }
 
       const url = 'https://docs.google.com/document/d/' + copyId + '/edit';
-      Export._showCopyLink(url, changes.length, changed);
+      // Append to the Drive log sheet so the record survives a browser wipe.
+      let logUrl = '';
+      try { logUrl = await GoogleAPI.logRevision(State.docTitle || 'WCR', url); }
+      catch (e) { /* logging is best-effort; the copy itself is safe in Drive */ }
+      Export._showCopyLink(url, changes.length, changed, logUrl);
       document.getElementById('confirm-create-btn').classList.add('hidden');
       History.add({
         id: 'r' + Date.now(), title: State.docTitle, at: Date.now(),
         dwrCount: State.dwrs.length, fixCount: changes.length, copyUrl: url
       });
-      Toast.show('Revised copy created in your Drive. Original untouched.', 'ok');
+      Toast.show('Revised copy created and logged in your Drive. Original untouched.', 'ok');
     } catch (e) {
       Toast.show(e.message || 'Could not create the revised copy.', 'err');
     } finally {
       btn.disabled = false; btn.textContent = 'Create revised copy in Drive';
     }
   },
-  _showCopyLink(url, total, changed) {
+  _showCopyLink(url, total, changed, logUrl) {
     const note = document.getElementById('confirm-result');
     if (!note) { window.open(url, '_blank'); return; }
     note.classList.remove('hidden');
     const warn = (total && changed < total)
       ? `<div class="muted" style="margin-top:6px;font-size:11.5px">${changed} of ${total} fixes applied. A few sentences span Google’s internal formatting and couldn’t be matched exactly — open the copy to check those.</div>`
       : '';
-    note.innerHTML = `<a class="primary-btn full" href="${url}" target="_blank" rel="noopener" style="display:block;text-align:center;text-decoration:none">Open revised copy in Google Docs</a>${warn}`;
+    const log = logUrl
+      ? `<a href="${logUrl}" target="_blank" rel="noopener" class="muted" style="display:block;margin-top:8px;font-size:11.5px">↗ This copy was added to your “WCR Revision Log” sheet in Drive</a>`
+      : `<div class="muted" style="margin-top:8px;font-size:11.5px">Note: couldn’t write to the Drive log sheet (the copy itself is safe in your Drive). Enable the Sheets API if you want logging.</div>`;
+    note.innerHTML = `<a class="primary-btn full" href="${url}" target="_blank" rel="noopener" style="display:block;text-align:center;text-decoration:none">Open revised copy in Google Docs</a>${warn}${log}`;
   },
   // surgical text replacement inside the original docx (word/document.xml)
   async patchOriginal(blob, accepted) {
