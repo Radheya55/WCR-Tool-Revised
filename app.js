@@ -6,7 +6,7 @@
    Original Google Doc is never modified.
    ═══════════════════════════════════════════════════════════════ */
 const CFG = window.WCRR_CONFIG || { DEMO_MODE: true };
-const BUILD = 'v27';
+const BUILD = 'v28';
 
 const State = {
   user: null,
@@ -695,26 +695,27 @@ const DWR = {
     const missing = pts.length - covered;
     let html = `<div class="cov-summary"><strong>${covered}</strong> covered · <strong>${missing}</strong> not covered · ${pts.length} total</div>`;
     html += `<div class="cov-confidence">This is an AI comparison of your DWRs against the report — not a guarantee. Scan the “covered” list below to confirm each was really written up before you rely on it.</div>`;
-    // show NOT covered first (actionable): From DWR → Suggested section
+    // NOT covered first: From DWR → Suggested section
     pts.filter(p => !p.covered).forEach((p) => {
       const idx = State.coverage.findIndex(c => c.point === p.point);
       const dwrSec = p.dwrSection ? esc(p.dwrSection) : 'DWR';
       const sec = (p.section || '').trim();
-      // the two discretionary phrases read on their own; sections get a prefix
-      const special = /^add to whichever|^scope differs/i.test(sec);
-      const sugg = sec ? (special ? esc(sec) : 'Suggested section: ' + esc(sec)) : 'Suggested section: your discretion';
+      const special = /^whichever|^add to whichever/i.test(sec);
+      const sugg = sec ? (special ? 'Whichever section you think is fit' : 'Suggested section: ' + esc(sec)) : 'Suggested section: your discretion';
       html += `<div class="cov-item">
         ${idx >= 0 ? `<button class="copy" onclick="DWR.copyPoint(${idx})">copy</button>` : ''}
         <span class="cov-flag miss">NOT COVERED</span>
         <span class="cov-sec">From DWR: ${dwrSec} → ${sugg}</span>${esc(p.point)}
       </div>`;
     });
-    // then covered (muted), still showing the DWR source
+    // COVERED: show where in the WCR it was found (named if known)
     pts.filter(p => p.covered).forEach((p) => {
       const dwrSec = p.dwrSection ? esc(p.dwrSection) : 'DWR';
+      const where = (p.coveredIn || '').trim();
+      const cov = where ? 'Covered in WCR: ' + esc(where) : 'Covered in WCR';
       html += `<div class="cov-item ok">
         <span class="cov-flag good">COVERED</span>
-        <span class="cov-sec">From DWR: ${dwrSec}</span>${esc(p.point)}
+        <span class="cov-sec">From DWR: ${dwrSec} → ${cov}</span>${esc(p.point)}
       </div>`;
     });
     items.innerHTML = html;
