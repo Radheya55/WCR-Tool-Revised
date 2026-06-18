@@ -6,7 +6,7 @@
    Original Google Doc is never modified.
    ═══════════════════════════════════════════════════════════════ */
 const CFG = window.WCRR_CONFIG || { DEMO_MODE: true };
-const BUILD = 'v25';
+const BUILD = 'v26';
 
 const State = {
   user: null,
@@ -695,19 +695,23 @@ const DWR = {
     const missing = pts.length - covered;
     let html = `<div class="cov-summary"><strong>${covered}</strong> covered · <strong>${missing}</strong> not covered · ${pts.length} total</div>`;
     html += `<div class="cov-confidence">This is an AI comparison of your DWRs against the report — not a guarantee. Scan the “covered” list below to confirm each was really written up before you rely on it.</div>`;
-    // show NOT covered first (actionable), each with copy + the section to paste into
+    // show NOT covered first (actionable): From DWR → belongs in WCR
     pts.filter(p => !p.covered).forEach((p) => {
       const idx = State.coverage.findIndex(c => c.point === p.point);
+      const dwrSec = p.dwrSection ? esc(p.dwrSection) : 'DWR';
+      const wcrSec = esc(p.section || 'General');
       html += `<div class="cov-item">
         ${idx >= 0 ? `<button class="copy" onclick="DWR.copyPoint(${idx})">copy</button>` : ''}
         <span class="cov-flag miss">NOT COVERED</span>
-        <span class="cov-sec">${esc(p.section || 'General')}</span>${esc(p.point)}
+        <span class="cov-sec">From DWR: ${dwrSec} → belongs in WCR: ${wcrSec}</span>${esc(p.point)}
       </div>`;
     });
-    // then covered (collapsed-feel, muted)
+    // then covered (muted), still showing the DWR source
     pts.filter(p => p.covered).forEach((p) => {
+      const dwrSec = p.dwrSection ? esc(p.dwrSection) : 'DWR';
       html += `<div class="cov-item ok">
-        <span class="cov-flag good">COVERED</span>${esc(p.point)}
+        <span class="cov-flag good">COVERED</span>
+        <span class="cov-sec">From DWR: ${dwrSec}</span>${esc(p.point)}
       </div>`;
     });
     items.innerHTML = html;
